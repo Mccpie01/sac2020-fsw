@@ -182,6 +182,7 @@ void setup()
     FNW_SERIAL.begin(FNW_BAUD);
     while (FNW_SERIAL.peek() == -1);
     token_t tok = FNW_TOKEN_NIL;
+    FNW_SERIAL.readBytes(&tok, sizeof(token_t));
 
     // Send acknowledgement of receipt.
     token_t tok_ack = FNW_TOKEN_AOK;
