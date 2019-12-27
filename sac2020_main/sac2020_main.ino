@@ -11,9 +11,14 @@
 /******************************** CONFIGURATION ********************************/
 
 /**
+ * Member of photic::Imu::Data_t corresponding to acceleration in the vertical
+ * direction.
+ */
+#define VERTICAL_ACCEL accel_x
+/**
  * Depth of Kalman gain calculation.
  */
-#define KGAIN_CALC_DEPTH   100
+#define KGAIN_CALC_DEPTH 100
 /**
  * Variance in altimeter readings determined offboard. TODO
  */
@@ -22,6 +27,32 @@
  * Variance in accelerometer readings determined offboard. TODO
  */
 #define ACC_VARIANCE -222222222
+/**
+ * Number of seconds that must elapse before detecting liftoff via
+ * accelerometer.
+ */
+#define NO_LIFTOFF_GRACE_PERIOD_S 10 * 60
+/**
+ * Minimum acceleration rolling average required to declare liftoff and enter
+ * powered flight state.
+ */
+#define LIFTOFF_ACCEL_TRIGGER_MPSSQ 3 * photic::EARTH_SLGRAV_MPSSQ
+/**
+ * Number of seconds that must elapse after liftoff before acceleration readings
+ * may be used to detect burnout.
+ */
+#define NO_BURNOUT_GRACE_PERIOD_S 5
+/**
+ * Maximum number of seconds that may elapse after liftoff before automatically
+ * declaring burnout, regardless of acceleration readings.
+ */
+#define BURNOUT_TRIGGER_TIMEOUT_S 8
+/**
+ * Negligence in burnout detection. In the allotted detection window, if the
+ * absolute difference between a rolling average of acceleration readings and
+ * 1 G is less than or equal to this number, we exit powered flight state.
+ */
+#define BURNOUT_ACCEL_TRIGGER_NEGL_MPSSQ 0.15
 
 /*********************************** GLOBALS **********************************/
 
@@ -43,13 +74,18 @@ Status_t g_pyro2_status = Status_t::OFFLINE; // Pyro 2.
 Status_t g_fnw_status   = Status_t::OFFLINE; // Flight computer network.
 
 /**
- * Kalman filter for state estimation.
+ * Kalman filter for state estimation and metronome controlling its frequency.
  */
 photic::KalmanFilter g_kf;
-/**
- * Kalman filter timer.
- */
 photic::Metronome g_mtr_kf(10);
+
+/**
+ * History for liftoff detection and metronome controlling its frequency.
+ * Liftoff is defined as a 1-second rolling average of vertical acceleration
+ * readings meeting or exceeding LIFTOFF_ACCEL_TRIGGER_MPSSQ.
+ */
+photic::history<float> g_hist_lodet(10);
+photic::Metronome g_mtr_lodet(10);
 
 /********************************* FUNCTIONS **********************************/
 
@@ -130,6 +166,12 @@ inline void lower_leds()
     digitalWrite(PIN_LED_PYRO2_FAULT, LOW);
 }
 
+void update_sensors()
+{
+    g_imu.update();
+    g_baro.update();
+}
+
 /*********************************** SETUP ************************************/
 
 void setup()
@@ -204,13 +246,23 @@ void setup()
     if (pulse_thread_id == -1)
     {
     #ifdef DEBUG_SERIAL
-        DEBUG_SERIAL.println("ERROR :: FAILED TO CREATE PULSE THREAD");
+        DEBUG_SERIAL.println("ERROR :: FAILED TO CREATE LED PULSE THREAD");
     #endif
         exit(1);
     }
 
-    // TODO
-    while (true);
+    // Wait for liftoff while the grace period is active and the proper
+    // acceleration has not yet been sensed.
+    while (time() < NO_LIFTOFF_GRACE_PERIOD_S ||
+           g_hist_lodet.mean() > LIFTOFF_ACCEL_TRIGGER_MPSSQ);
+    {
+        update_sensors();
+        // Add to the liftoff detection history according to the metronome.
+        if (g_mtr_lodet.poll(time()))
+        {
+            g_hist_lodet.add(g_imu.data().VERTICAL_ACCEL);
+        }
+    }
 
     // Join the LED pulse thread to ensure we have full command over DIO during
     // flight without the need to synchronize.

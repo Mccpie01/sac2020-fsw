@@ -96,6 +96,19 @@ typedef struct AuxStateVector
 } AuxStateVector_t;
 
 /**
+ * All possible vehicle states, used in state machine management.
+ */
+typedef enum VehicleState : uint8_t
+{
+    PRELTOFF, // Pre-liftoff; sitting on the pad.
+    PWFLIGHT, // Powered flight; motor burning.
+    CRUISING, // Motor spent, still ascending.
+    FALLDROG, // Falling under drogue parachute.
+    FALLMAIN, // Falling under main parachute.
+    CONCLUDE  // Flight over, with rocket likely grounded.
+} VehicleState_t;
+
+/**
  * Tokens are 1-byte pieces of metadata sent between flight computers.
  */
 typedef uint8_t token_t;

@@ -205,7 +205,7 @@ void setup()
     if (pulse_thread_id == -1)
     {
     #ifdef DEBUG_SERIAL
-        DEBUG_SERIAL.println("ERROR :: FAILED TO CREATE PULSE THREAD");
+        DEBUG_SERIAL.println("ERROR :: FAILED TO CREATE LED PULSE THREAD");
     #endif
         exit(1);
     }

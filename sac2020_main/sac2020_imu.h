@@ -26,7 +26,7 @@ public:
     }
 
     /**
-     * Updates orientation and acceleration data with the BNO055's Euler angles
+     * Updates orientation and acceleration data with the BNO055's Euler angle
      * and linear accleration readings. Magnetometer data is disregarded.
      *
      * @ret     Always returns true.
@@ -38,7 +38,8 @@ public:
         m_bno055.getEvent(&orient, Adafruit_BNO055::VECTOR_EULER);
         m_bno055.getEvent(&accel, Adafruit_BNO055::VECTOR_LINEARACCEL);
 
-        // Populate orientation data.
+        // Populate orientation data. Currently this maps x, y, z to roll,
+        // pitch, yaw, but I have no idea if this is correct.
         m_data.gyro_r = orient.orientation.x;
         m_data.gyro_p = orient.orientation.y;
         m_data.gyro_y = orient.orientation.z;
