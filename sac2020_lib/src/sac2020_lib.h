@@ -5,6 +5,10 @@
 #include <vector>
 
 /**
+ * Altitude of Truth or Consequences, NM.
+ */
+#define LAUNCHPAD_ALTITUDE 1293.876
+/**
  * Toggles debug prints to Serial.
  */
 #define DEBUG_SERIAL Serial
@@ -77,6 +81,9 @@ typedef struct MainStateVector
     bool apogee;
     bool drogue_deployed;
     bool main_deployed;
+
+    // Current state of the flight computer.
+    uint8_t state;
 
 } MainStateVector_t;
 

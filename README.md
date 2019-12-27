@@ -29,3 +29,4 @@
 * [Adafruit GPS driver](https://github.com/adafruit/Adafruit_GPS)
 * [Adafruit Unified Sensor driver](https://github.com/adafruit/Adafruit_Sensor)
 * sac2020_lib (included in repository)
+* [Photic](https://github.com/longhorn-rocketry/photic)

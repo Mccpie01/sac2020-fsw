@@ -211,11 +211,13 @@ void setup()
     }
 
     // Determine if everything initialized correctly.
-    bool ok = g_sd_status == g_gps_status == g_rfm_status ==
+    bool ok = g_sd_status  == Status_t::ONLINE &&
+              g_gps_status == Status_t::ONLINE &&
+              g_rfm_status == Status_t::ONLINE &&
         #ifdef USING_FNW
-              g_fnw_status ==
+              g_fnw_status == Status_t::ONLINE
         #endif
-              Status_t::ONLINE;
+              ;
 
     // TODO
     while (true);

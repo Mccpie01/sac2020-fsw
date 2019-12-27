@@ -1,19 +1,35 @@
-#include <Adafruit_BMP085.h>
-#include <Adafruit_BNO055.h>
+#include <photic.h>
 #include <SPI.h>
 #include <Servo.h>
 #include <Wire.h>
 
+#include "sac2020_baro.h"
+#include "sac2020_imu.h"
 #include "sac2020_main_pins.h"
 #include "sac2020_lib.h"
+
+/******************************** CONFIGURATION ********************************/
+
+/**
+ * Depth of Kalman gain calculation.
+ */
+#define KGAIN_CALC_DEPTH   100
+/**
+ * Variance in altimeter readings determined offboard. TODO
+ */
+#define POS_VARIANCE -111111111
+/**
+ * Variance in accelerometer readings determined offboard. TODO
+ */
+#define ACC_VARIANCE -222222222
 
 /*********************************** GLOBALS **********************************/
 
 /**
  * Hardware wrappers, configured during startup.
  */
-Adafruit_BNO055 g_imu;
-Adafruit_BMP085 g_baro;
+Sac2020Imu g_imu;
+Sac2020Barometer g_baro;
 Servo g_servo1;
 Servo g_servo2;
 
@@ -26,14 +42,33 @@ Status_t g_pyro1_status = Status_t::OFFLINE; // Pyro 1.
 Status_t g_pyro2_status = Status_t::OFFLINE; // Pyro 2.
 Status_t g_fnw_status   = Status_t::OFFLINE; // Flight computer network.
 
+/**
+ * Kalman filter for state estimation.
+ */
+photic::KalmanFilter g_kf;
+/**
+ * Kalman filter timer.
+ */
+photic::Metronome g_mtr_kf(10);
+
 /********************************* FUNCTIONS **********************************/
+
+/**
+ * Gets the time elapsed since the program began in seconds.
+ *
+ * @ret     Time since epoch in seconds.
+ */
+float time()
+{
+    return millis() / 1000.0;
+}
 
 /**
  * Initializes the barometer and aborts on failure.
  */
 void init_baro()
 {
-    if (!g_baro.begin(0x00))
+    if (!g_baro.init())
     {
         fault(PIN_LED_BARO_FAULT, "ERROR :: BMP085 INIT FAILED", g_baro_status);
         return;
@@ -47,13 +82,11 @@ void init_baro()
  */
 void init_imu()
 {
-    if (!g_imu.begin())
+    if (!g_imu.init())
     {
         fault(PIN_LED_IMU_FAULT, "ERROR :: BNO055 INIT FAILED", g_imu_status);
         return;
     }
-
-    g_imu.setExtCrystalUse(true);
 
     g_imu_status = Status_t::ONLINE;
 }
@@ -112,6 +145,12 @@ void setup()
     init_servos();
     check_pyros();
 
+    // Set up Kalman filter.
+    g_kf.set_delta_t(g_mtr_kf.period());
+    g_kf.set_sensor_variance(POS_VARIANCE, ACC_VARIANCE);
+    g_kf.set_initial_estimate(LAUNCHPAD_ALTITUDE, 0, 0);
+    g_kf.compute_kg(KGAIN_CALC_DEPTH);
+
     // Build status LED pulse configuration.
     g_led_pulse_conf.pulses = SYS_ONLINE_LED_PULSES;
     if (g_baro_status == Status::ONLINE)
@@ -132,7 +171,9 @@ void setup()
     }
 
     // Determine if everything initialized correctly.
-    bool ok = g_baro_status == g_imu_status == g_pyro1_status ==
+    bool ok = g_baro_status  == Status_t::ONLINE &&
+              g_imu_status   == Status_t::ONLINE &&
+              g_pyro1_status == Status_t::ONLINE &&
               g_pyro2_status == Status_t::ONLINE;
 
 #ifdef USING_FNW
@@ -184,5 +225,10 @@ void setup()
 
 void loop()
 {
+    double t = time();
 
+    if (g_mtr_kf.poll(t))
+    {
+
+    }
 }
