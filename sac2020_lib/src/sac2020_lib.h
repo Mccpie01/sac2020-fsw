@@ -52,12 +52,29 @@ typedef struct PulseLEDs
 } PulseLEDs_t;
 
 /**
+ * All possible vehicle states, used in state machine management.
+ */
+typedef enum VehicleState : uint8_t
+{
+    PRELTOFF, // Pre-liftoff; sitting on the pad.
+    PWFLIGHT, // Powered flight; motor burning.
+    CRUISING, // Motor spent, still ascending.
+    FALLDROG, // Falling under drogue parachute.
+    FALLMAIN, // Falling under main parachute.
+    CONCLUDE  // Flight over, with rocket likely grounded.
+} VehicleState_t;
+
+/**
  * State vector for main flight computer.
  */
 typedef struct MainStateVector
 {
     // Timestamp.
     float time;
+
+    // Timestamps for certain flight events.
+    float t_liftoff;
+    float t_burnout;
 
     // Rocket state as estimated by nav filter.
     float altitude;
@@ -75,15 +92,10 @@ typedef struct MainStateVector
     float gyro_y;
 
     // Event flags.
-    bool liftoff;
-    bool burnout;
     bool canards_deployed;
-    bool apogee;
-    bool drogue_deployed;
-    bool main_deployed;
 
     // Current state of the flight computer.
-    uint8_t state;
+    VehicleState_t state;
 
 } MainStateVector_t;
 
@@ -94,19 +106,6 @@ typedef struct AuxStateVector
 {
 
 } AuxStateVector_t;
-
-/**
- * All possible vehicle states, used in state machine management.
- */
-typedef enum VehicleState : uint8_t
-{
-    PRELTOFF, // Pre-liftoff; sitting on the pad.
-    PWFLIGHT, // Powered flight; motor burning.
-    CRUISING, // Motor spent, still ascending.
-    FALLDROG, // Falling under drogue parachute.
-    FALLMAIN, // Falling under main parachute.
-    CONCLUDE  // Flight over, with rocket likely grounded.
-} VehicleState_t;
 
 /**
  * Tokens are 1-byte pieces of metadata sent between flight computers.

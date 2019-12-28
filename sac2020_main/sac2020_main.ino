@@ -11,11 +11,6 @@
 /******************************** CONFIGURATION ********************************/
 
 /**
- * Member of photic::Imu::Data_t corresponding to acceleration in the vertical
- * direction.
- */
-#define VERTICAL_ACCEL accel_x
-/**
  * Depth of Kalman gain calculation.
  */
 #define KGAIN_CALC_DEPTH 100
@@ -53,6 +48,36 @@
  * 1 G is less than or equal to this number, we exit powered flight state.
  */
 #define BURNOUT_ACCEL_TRIGGER_NEGL_MPSSQ 0.15
+/**
+ * Number of pressure readings taken on startup to estimate launchpad altitude.
+ */
+#define LAUNCHPAD_ALTITUDE_EST_READINGS 1000
+
+/********************************* STATE MACROS *******************************/
+
+/**
+ * Shortcuts to members of the state vector.
+ */
+#define SV_TIME         g_statevec.time
+#define SV_T_LIFTOFF    g_statevec.t_liftoff
+#define SV_T_BURNOUT    g_statevec.t_burnout
+#define SV_ALTITUDE     g_statevec.altitude
+#define SV_VELOCITY     g_statevec.velocity
+#define SV_ACCEL        g_statevec.acceleration
+#define SV_PRESSURE     g_statevec.pressure
+#define SV_TEMPERATURE  g_statevec.temperature
+#define SV_ACCEL_X      g_statevec.accel_x
+#define SV_ACCEL_Y      g_statevec.accel_y
+#define SV_ACCEL_Z      g_statevec.accel_z
+#define SV_GYRO_R       g_statevec.gyro_r
+#define SV_GYRO_P       g_statevec.gyro_p
+#define SV_GYRO_Y       g_statevec.gyro_y
+#define SV_CANARDSDEP   g_statevec.canards_deployed
+#define SV_STATE        g_statevec.state
+/**
+ * Member of state vector containing most recent vertical acceleration reading.
+ */
+#define VERTICAL_ACCEL  g_statevec.accel_x
 
 /*********************************** GLOBALS **********************************/
 
@@ -86,6 +111,26 @@ photic::Metronome g_mtr_kf(10);
  */
 photic::history<float> g_hist_lodet(10);
 photic::Metronome g_mtr_lodet(10);
+
+/**
+ * History for burnout detection and metronome controlling its frequency.
+ * Burnout is defined as a 1-second rolling average of vertical acceleration
+ * readings within BURNOUT_ACCEL_TRIGGER_NEGL_MPSSQ of 1 G.
+ */
+photic::history<float> g_hist_bodet(10);
+photic::Metronome g_mtr_bodet(10);
+
+/**
+ * Kinetic state of the rocket, updated by the Kalman filter during ascent.
+ * Initial altitude begins at -1 but is estimated during startup via barometer.
+ */
+photic::matrix g_kinstate(3, 1, -1, 0, 0);
+
+/**
+ * Vehicle state vector. Zeroed on startup. Contains the symbolic state of the
+ * vehicle, i.e. if it's in powered flight, falling, etc.
+ */
+MainStateVector_t g_statevec;
 
 /********************************* FUNCTIONS **********************************/
 
@@ -166,10 +211,22 @@ inline void lower_leds()
     digitalWrite(PIN_LED_PYRO2_FAULT, LOW);
 }
 
+/**
+ * Updates all sensors and dumps their readings into the state vector.
+ */
 void update_sensors()
 {
     g_imu.update();
     g_baro.update();
+
+    SV_PRESSURE = g_baro.data().pressure;
+    SV_TEMPERATURE = g_baro.data().temperature;
+    SV_ACCEL_X = g_imu.data().accel_x;
+    SV_ACCEL_Y = g_imu.data().accel_y;
+    SV_ACCEL_Z = g_imu.data().accel_z;
+    SV_GYRO_R = g_imu.data().gyro_r;
+    SV_GYRO_P = g_imu.data().gyro_p;
+    SV_GYRO_Y = g_imu.data().gyro_y;
 }
 
 /*********************************** SETUP ************************************/
@@ -181,16 +238,30 @@ void setup()
     while (!DEBUG_SERIAL);
 #endif
 
+    // Zero the state vector.
+    memset(&g_statevec, 0, sizeof(MainStateVector_t));
+    SV_STATE = VehicleState_t::PRELTOFF;
+
     // Initialize subsystems.
     init_baro();
     init_imu();
     init_servos();
     check_pyros();
 
+    // Estimate initial altitude via barometer.
+    double x0 = 0;
+    for (std::size_t i = 0; i < LAUNCHPAD_ALTITUDE_EST_READINGS; i++)
+    {
+        g_baro.update();
+        x0 += g_baro.data().altitude;
+    }
+    g_kinstate[0][0] = x0 / LAUNCHPAD_ALTITUDE_EST_READINGS;
+
     // Set up Kalman filter.
     g_kf.set_delta_t(g_mtr_kf.period());
     g_kf.set_sensor_variance(POS_VARIANCE, ACC_VARIANCE);
-    g_kf.set_initial_estimate(LAUNCHPAD_ALTITUDE, 0, 0);
+    g_kf.set_initial_estimate(g_kinstate[0][0], g_kinstate[1][0],
+                              g_kinstate[2][0]);
     g_kf.compute_kg(KGAIN_CALC_DEPTH);
 
     // Build status LED pulse configuration.
@@ -256,13 +327,17 @@ void setup()
     while (time() < NO_LIFTOFF_GRACE_PERIOD_S ||
            g_hist_lodet.mean() > LIFTOFF_ACCEL_TRIGGER_MPSSQ);
     {
-        update_sensors();
         // Add to the liftoff detection history according to the metronome.
         if (g_mtr_lodet.poll(time()))
         {
-            g_hist_lodet.add(g_imu.data().VERTICAL_ACCEL);
+            update_sensors();
+            g_hist_lodet.add(VERTICAL_ACCEL);
         }
     }
+
+    // You can't take the sky from me.
+    SV_T_LIFTOFF = time();
+    SV_STATE = VehicleState_t::PWFLIGHT;
 
     // Join the LED pulse thread to ensure we have full command over DIO during
     // flight without the need to synchronize.
@@ -273,14 +348,66 @@ void setup()
     lower_leds();
 }
 
+/**
+ * Updates the state machine for the entire mission.
+ */
+void run_state_machine()
+{
+    // If in powered flight, we're either waiting for engine burn timeout or
+    // vertical acceleration sufficiently close to 1 G to move to cruising
+    // state.
+    if (SV_STATE == VehicleState_t::PWFLIGHT)
+    {
+        // Update vertical acceleration history.
+        if (g_mtr_bodet.poll(SV_TIME))
+        {
+            g_hist_bodet.add(VERTICAL_ACCEL);
+        }
+
+        // Evaluate all conditions involved in burnout detection.
+        bool t_since_liftoff = SV_TIME - SV_T_LIFTOFF;
+        bool grace_period_over = t_since_liftoff >= NO_BURNOUT_GRACE_PERIOD_S;
+        bool timed_out = t_since_liftoff >= BURNOUT_TRIGGER_TIMEOUT_S;
+        bool accel_conds_met =
+                fabs(g_hist_bodet.mean() - photic::EARTH_SLGRAV_MPSSQ)
+                <= BURNOUT_ACCEL_TRIGGER_NEGL_MPSSQ;
+
+        // If the grace period is over and either the trigger has timed out
+        // or the acceleration conditions are met, rocket is cruising.
+        if (grace_period_over && (timed_out || accel_conds_met))
+        {
+            SV_STATE = VehicleState_t::CRUISING;
+            SV_T_BURNOUT = SV_TIME;
+        }
+    }
+}
+
 /************************************ LOOP ************************************/
 
 void loop()
 {
-    double t = time();
+    // Fetch a timestamp for this system iteration.
+    SV_TIME = time();
 
-    if (g_mtr_kf.poll(t))
+    // Update sensors and dump their readings into the state vector.
+    update_sensors();
+
+    // ACTION 0 - STATE MACHINE UPDATE. Perform state transitions.
+    run_state_machine();
+
+    // ACTION 1 - KINETIC STATE ESTIMATION. The Kalman filter updates our
+    // estimate of the rocket's kinetic state. This runs in every state except
+    // pre-liftoff.
+    bool action_kf = SV_STATE != VehicleState_t::PRELTOFF;
+    if (action_kf && g_mtr_kf.poll(SV_TIME))
     {
+        float pos_observed = SV_ALTITUDE;
+        float acc_observed = VERTICAL_ACCEL;
 
+        // Run the filter and place the new estimate into the state vector.
+        g_kinstate = g_kf.filter(pos_observed, acc_observed);
+        SV_ALTITUDE = g_kinstate[0][0];
+        SV_VELOCITY = g_kinstate[1][0];
+        SV_ACCEL = g_kinstate[2][0];
     }
 }
