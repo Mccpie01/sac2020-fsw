@@ -52,6 +52,18 @@
  * Number of pressure readings taken on startup to estimate launchpad altitude.
  */
 #define LAUNCHPAD_ALTITUDE_EST_READINGS 1000
+/**
+ * Altitude relative to launchpad at which to deploy canards. TODO
+ */
+#define CANARD_DEPLOYMENT_ALTITUDE_M 100
+/**
+ * Minimum time that must elapse before altitude-based canard deployments.
+ */
+#define NO_CANARDS_GRACE_PERIOD_S 10
+/**
+ * Time after liftoff at which to automatically deploy canards. TODO
+ */
+#define CANARD_DEPLOYMENT_TIMEOUT_S 20
 
 /********************************* STATE MACROS *******************************/
 
@@ -61,6 +73,7 @@
 #define SV_TIME         g_statevec.time
 #define SV_T_LIFTOFF    g_statevec.t_liftoff
 #define SV_T_BURNOUT    g_statevec.t_burnout
+#define SV_T_CANARDS    g_statevec.t_canards
 #define SV_ALTITUDE     g_statevec.altitude
 #define SV_VELOCITY     g_statevec.velocity
 #define SV_ACCEL        g_statevec.acceleration
@@ -105,6 +118,11 @@ photic::KalmanFilter g_kf;
 photic::Metronome g_mtr_kf(10);
 
 /**
+ * Launchpad altitude, estimated during startup.
+ */
+double g_x0;
+
+/**
  * History for liftoff detection and metronome controlling its frequency.
  * Liftoff is defined as a 1-second rolling average of vertical acceleration
  * readings meeting or exceeding LIFTOFF_ACCEL_TRIGGER_MPSSQ.
@@ -121,16 +139,23 @@ photic::history<float> g_hist_bodet(10);
 photic::Metronome g_mtr_bodet(10);
 
 /**
- * Kinetic state of the rocket, updated by the Kalman filter during ascent.
- * Initial altitude begins at -1 but is estimated during startup via barometer.
+ * History for apogee detection and metronome controlling its frequency. Apogee
+ * is defined as a 1-second rolling average of vertical velocity estimates that
+ * are negative.
  */
-photic::matrix g_kinstate(3, 1, -1, 0, 0);
+photic::history<float> g_hist_apdet(10);
+photic::Metronome g_mtr_apdet(10);
 
 /**
  * Vehicle state vector. Zeroed on startup. Contains the symbolic state of the
  * vehicle, i.e. if it's in powered flight, falling, etc.
  */
 MainStateVector_t g_statevec;
+/**
+ * Metronome controlling the frequency at which state vectors are sent to
+ * the aux computer for SD backup and transmission to ground.
+ */
+photic::Metronome g_mtr_telemtx(10);
 
 /********************************* FUNCTIONS **********************************/
 
@@ -145,7 +170,7 @@ float time()
 }
 
 /**
- * Initializes the barometer and aborts on failure.
+ * Initializes the BMP085 barometer.
  */
 void init_baro()
 {
@@ -159,7 +184,7 @@ void init_baro()
 }
 
 /**
- * Initializes the IMU and aborts on failure.
+ * Initializes the BNO055 IMU.
  */
 void init_imu()
 {
@@ -229,6 +254,30 @@ void update_sensors()
     SV_GYRO_Y = g_imu.data().gyro_y;
 }
 
+/**
+ * Deploys forward canard fins. TODO
+ */
+void deploy_canards()
+{
+
+}
+
+/**
+ * Deploy the drogue parachute.
+ */
+void deploy_drogue()
+{
+
+}
+
+/**
+ * Deploy the main parachute.
+ */
+void deploy_main()
+{
+
+}
+
 /*********************************** SETUP ************************************/
 
 void setup()
@@ -249,19 +298,19 @@ void setup()
     check_pyros();
 
     // Estimate initial altitude via barometer.
-    double x0 = 0;
+    g_x0 = 0;
     for (std::size_t i = 0; i < LAUNCHPAD_ALTITUDE_EST_READINGS; i++)
     {
         g_baro.update();
-        x0 += g_baro.data().altitude;
+        g_x0 += g_baro.data().altitude;
     }
-    g_kinstate[0][0] = x0 / LAUNCHPAD_ALTITUDE_EST_READINGS;
+    g_x0 /= LAUNCHPAD_ALTITUDE_EST_READINGS;
+    SV_ALTITUDE = g_x0;
 
     // Set up Kalman filter.
     g_kf.set_delta_t(g_mtr_kf.period());
     g_kf.set_sensor_variance(POS_VARIANCE, ACC_VARIANCE);
-    g_kf.set_initial_estimate(g_kinstate[0][0], g_kinstate[1][0],
-                              g_kinstate[2][0]);
+    g_kf.set_initial_estimate(g_x0, 0, 0);
     g_kf.compute_kg(KGAIN_CALC_DEPTH);
 
     // Build status LED pulse configuration.
@@ -353,9 +402,8 @@ void setup()
  */
 void run_state_machine()
 {
-    // If in powered flight, we're either waiting for engine burn timeout or
-    // vertical acceleration sufficiently close to 1 G to move to cruising
-    // state.
+    // If in powered flight, we're waiting for a timeout or sufficiently low
+    // sustained acceleration to transition to cruising state.
     if (SV_STATE == VehicleState_t::PWFLIGHT)
     {
         // Update vertical acceleration history.
@@ -365,21 +413,65 @@ void run_state_machine()
         }
 
         // Evaluate all conditions involved in burnout detection.
-        bool t_since_liftoff = SV_TIME - SV_T_LIFTOFF;
+        float t_since_liftoff = SV_TIME - SV_T_LIFTOFF;
         bool grace_period_over = t_since_liftoff >= NO_BURNOUT_GRACE_PERIOD_S;
         bool timed_out = t_since_liftoff >= BURNOUT_TRIGGER_TIMEOUT_S;
-        bool accel_conds_met =
+        bool burnout_conds_met =
                 fabs(g_hist_bodet.mean() - photic::EARTH_SLGRAV_MPSSQ)
                 <= BURNOUT_ACCEL_TRIGGER_NEGL_MPSSQ;
 
         // If the grace period is over and either the trigger has timed out
         // or the acceleration conditions are met, rocket is cruising.
-        if (grace_period_over && (timed_out || accel_conds_met))
+        if (grace_period_over && (timed_out || burnout_conds_met))
         {
             SV_STATE = VehicleState_t::CRUISING;
             SV_T_BURNOUT = SV_TIME;
         }
     }
+    // If cruising without canards deployed, we're waiting for a timeout or
+    // sufficiently high altitude estimate to trigger deployment.
+    else if (SV_STATE == VehicleState_t::CRUISING)
+    {
+        // Evaluate all conditions involved in canard deployment.
+        float t_since_liftoff = SV_TIME - SV_T_LIFTOFF;
+        bool grace_period_over = t_since_liftoff >= NO_CANARDS_GRACE_PERIOD_S;
+        bool timed_out = t_since_liftoff >= CANARD_DEPLOYMENT_TIMEOUT_S;
+        bool canard_conds_met =
+                (SV_ALTITUDE - g_x0) >= CANARD_DEPLOYMENT_ALTITUDE_M;
+
+        // If the grace period is over and either the deployment has timed out
+        // or the altitude conditions are met, rocket deploys canards.
+        if (grace_period_over && (timed_out || canard_conds_met))
+        {
+            SV_STATE = VehicleState_t::CRSCANRD;
+            SV_T_CANARDS = SV_TIME;
+            deploy_canards();
+        }
+    }
+    // If cruising with canards deployed, we're waiting for a timeout or
+    // sustained negative velocity estimate to trigger apogee/drogue deployment.
+    // else if (SV_STATE == VehicleState::CRSCANRD)
+    // {
+    //     if (g_mtr_apdet.poll(SV_TIME))
+    //     {
+    //         g_hist_apdet.add(SV_VELOCITY);
+    //     }
+    //
+    //     // Evaluate all conditions involved in apogee detection.
+    //     float t_since_liftoff = SV_TIME - SV_T_LIFTOFF;
+    //     bool grace_period_Over = t_since_liftoff >= NO_APOGEE_GRACE_PERIOD_S;
+    //     bool timed_out = time_since_liftoff >= APOGEE_DETECTION_TIMEOUT_S;
+    //     bool apogee_conds_met = g_hist_apdet.mean() < 0;
+    //
+    //     // If the grace period is over and either detection has timed out or the
+    //     // velocity conditions are met, rocket assumes it is falling and deploys
+    //     // the drogue parachute.
+    //     if (grace_period_over && (timed_out || apogee_conds_met))
+    //     {
+    //         SV_STATE = VehicleState_t::FALLDROG;
+    //         deploy_drogue();
+    //     }
+    // }
 }
 
 /************************************ LOOP ************************************/
@@ -392,22 +484,29 @@ void loop()
     // Update sensors and dump their readings into the state vector.
     update_sensors();
 
-    // ACTION 0 - STATE MACHINE UPDATE. Perform state transitions.
-    run_state_machine();
-
-    // ACTION 1 - KINETIC STATE ESTIMATION. The Kalman filter updates our
-    // estimate of the rocket's kinetic state. This runs in every state except
-    // pre-liftoff.
-    bool action_kf = SV_STATE != VehicleState_t::PRELTOFF;
-    if (action_kf && g_mtr_kf.poll(SV_TIME))
+    // KINETIC STATE ESTIMATION. The Kalman filter updates our estimate of the
+    // rocket's kinetic state. This runs in every state except pre-liftoff.
+    bool do_kf = SV_STATE != VehicleState_t::PRELTOFF;
+    if (do_kf && g_mtr_kf.poll(SV_TIME))
     {
         float pos_observed = SV_ALTITUDE;
         float acc_observed = VERTICAL_ACCEL;
 
         // Run the filter and place the new estimate into the state vector.
-        g_kinstate = g_kf.filter(pos_observed, acc_observed);
-        SV_ALTITUDE = g_kinstate[0][0];
-        SV_VELOCITY = g_kinstate[1][0];
-        SV_ACCEL = g_kinstate[2][0];
+        photic::matrix kinstate = g_kf.filter(pos_observed, acc_observed);
+        SV_ALTITUDE = kinstate[0][0];
+        SV_VELOCITY = kinstate[1][0];
+        SV_ACCEL = kinstate[2][0];
+    }
+
+    // STATE MACHINE UPDATE. Perform state transitions.
+    run_state_machine();
+
+    // TELEMETRY TRANSMISSION. Transmit state vector to the aux computer over
+    // FNW_SERIAL for SD backup and transmission to ground station. This runs in
+    // every state.
+    if (g_mtr_telemtx.poll(SV_TIME))
+    {
+        // TODO
     }
 }

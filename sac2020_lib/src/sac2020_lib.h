@@ -5,10 +5,6 @@
 #include <vector>
 
 /**
- * Altitude of Truth or Consequences, NM.
- */
-#define LAUNCHPAD_ALTITUDE 1293.876
-/**
  * Toggles debug prints to Serial.
  */
 #define DEBUG_SERIAL Serial
@@ -59,6 +55,7 @@ typedef enum VehicleState : uint8_t
     PRELTOFF, // Pre-liftoff; sitting on the pad.
     PWFLIGHT, // Powered flight; motor burning.
     CRUISING, // Motor spent, still ascending.
+    CRSCANRD, // Cruising with canards deployed.
     FALLDROG, // Falling under drogue parachute.
     FALLMAIN, // Falling under main parachute.
     CONCLUDE  // Flight over, with rocket likely grounded.
@@ -72,9 +69,10 @@ typedef struct MainStateVector
     // Timestamp.
     float time;
 
-    // Timestamps for certain flight events.
+    // Timestamps for flight events.
     float t_liftoff;
     float t_burnout;
+    float t_canards;
 
     // Rocket state as estimated by nav filter.
     float altitude;
