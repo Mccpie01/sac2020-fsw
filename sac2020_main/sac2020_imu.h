@@ -5,6 +5,8 @@
 #include <Adafruit_Sensor.h>
 #include <photic.h>
 
+#include "utility/imumaths.h"
+
 class Sac2020Imu final : public photic::Imu
 {
 public:
@@ -49,7 +51,22 @@ public:
         m_data.accel_y = accel.acceleration.y;
         m_data.accel_z = accel.acceleration.z;
 
+        // Populate quaternion orientation. This does not go into the data
+        // struct because it uses a proprietary class. Access with
+        // Sac2020Imu::quat().
+        m_quat = m_bno055.getQuat();
+
         return true;
+    }
+
+    /**
+     * Gets quaternion orientation.
+     *
+     * @ret     Quaternion orientation relative to startup orientation.
+     */
+    imu::Quaternion quat()
+    {
+        return m_quat;
     }
 
 private:
@@ -57,6 +74,10 @@ private:
      * BNO055 driver.
      */
     Adafruit_BNO055 m_bno055;
+    /**
+     * Last sensed quaternion orientation.
+     */
+    imu::Quaternion m_quat;
 };
 
 #endif

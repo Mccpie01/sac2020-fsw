@@ -1,30 +1,67 @@
 #ifndef SAC2020_LIB_H
 #define SAC2020_LIB_H
 
-#include <TeensyThreads.h>
 #include <vector>
 
-/**
- * Toggles debug prints to Serial.
- */
-#define DEBUG_SERIAL Serial
+#ifndef FF
+    #include <TeensyThreads.h>
+
+    /**
+     * Toggles debug prints to Serial.
+     */
+    #define DEBUG_SERIAL Serial
+
+    /**
+     * Flight network communication line (serial line between main and aux FCs).
+     */
+    #define FNW_SERIAL Serial1
+
+    /**
+     * Baud rate for FNW_SERIAL.
+     */
+    #define FNW_BAUD 115200
+
+    /**
+     * Whether or not we are using the flight computer network. If defined, the
+     * flight computers will attempt to handshake on setup() and block until
+     * consensus is established.
+     */
+    #define USING_FNW
+
+    /**
+     * Size of the telemetry packets sent from main to aux. The size of the
+     * Arduino serial rx/tx buffers must be >= this number. The buffer size is
+     * 64 by default and may need to be modified in the Serial source code.
+     */
+    #define TELEM_PACKET_SIZE 128
+#else
+    #include <cstdint>
+#endif
 
 /**
- * Flight network communication line (serial line between main and aux FCs).
+ * Determines where time stands relative to an event window. Should be followed
+ * by an EVENT_WINDOW_EVAL().
+ *
+ * @param   k_t      Current time.
+ * @param   k_t_low  Lower event window bound.
+ * @param   k_t_high Upper event window bound.
  */
-#define FNW_SERIAL Serial1
+#define EVENT_WINDOW_INIT(k_t, k_t_low, k_t_high)                              \
+    float _t_since_liftoff = k_t;                                              \
+    bool _grace_period_over = _t_since_liftoff >= k_t_low;                    \
+    bool _timed_out = _t_since_liftoff >= k_t_high;
 
 /**
- * Baud rate for FNW_SERIAL.
+ * Evaluates whether or not an event should trigger. Should be preceeded by an
+ * EVENT_WINDOW_INIT().
+ *
+ * @param   k_conds_ok If time-invariant trigger conditions are met, i.e. those
+ *                     conditions not related to the detection window.
+ *
+ * @ret     If the event should trigger.
  */
-#define FNW_BAUD 115200
-
-/**
- * Whether or not we are using the flight computer network. If defined, the
- * flight computers will attempt to handshake on setup() and block until
- * consensus is established.
- */
-#define USING_FNW
+#define EVENT_WINDOW_EVAL(k_conds_ok)                                          \
+    (_grace_period_over && (_timed_out || k_conds_ok))
 
 /********************************* TYPEDEFS ***********************************/
 
@@ -78,10 +115,12 @@ typedef struct MainStateVector
     float altitude;
     float velocity;
     float acceleration;
+    float accel_vertical;
 
     // Sensor values of interest.
     float pressure;
     float temperature;
+    float baro_altitude;
     float accel_x;
     float accel_y;
     float accel_z;
@@ -120,7 +159,9 @@ const uint8_t SYS_ONLINE_LED_PULSES = 3;
 /**
  * Lock for synchronizing digital IO.
  */
-extern Threads::Mutex g_dio_lock;
+#ifndef FF
+    extern Threads::Mutex g_dio_lock;
+#endif
 
 /**
  * Tokens sent between flight computers.
@@ -153,7 +194,7 @@ void fault(uint8_t k_pin, const char* k_msg, Status_t& k_stat);
  * @ret     Current system time in seconds.
  * @return [description]
  */
-inline double time_s();
+double time_s();
 
 /**
  * Pulses LEDs to indicate system status. In general, the LEDs being pulsed will

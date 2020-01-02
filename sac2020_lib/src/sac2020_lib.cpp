@@ -1,4 +1,8 @@
-#include <Wire.h>
+#ifndef FF
+    #include <Wire.h>
+#else
+    #include "ff_arduino_harness.hpp"
+#endif
 
 #include "sac2020_lib.h"
 
@@ -10,7 +14,9 @@ namespace std
     void __throw_length_error(const char* e) {}
 }
 
-Threads::Mutex g_dio_lock;
+#ifndef FF
+    Threads::Mutex g_dio_lock;
+#endif
 
 PulseLEDs_t g_led_pulse_conf;
 
@@ -23,11 +29,12 @@ void fault(uint8_t k_pin, const char* k_msg, Status_t& k_stat)
     k_stat = Status_t::FAULT;
 }
 
-inline double time_s()
+double time_s()
 {
     return millis() / 1000.0;
 }
 
+#ifndef FF
 void pulse_leds(const PulseLEDs_t k_conf)
 {
     // For each LED pulse...
@@ -62,3 +69,4 @@ void pulse_leds(const PulseLEDs_t k_conf)
     // Big delay between pulses.
     threads.delay(900);
 }
+#endif
