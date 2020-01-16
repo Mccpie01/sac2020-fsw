@@ -39,17 +39,27 @@
 #endif
 
 /**
+ * Cause of a state machine transition, used in debugging.
+ */
+typedef enum Reason : uint8_t
+{
+    CONDITION,
+    TIMEOUT
+} Reason_t;
+
+/**
  * Determines where time stands relative to an event window. Should be followed
  * by an EVENT_WINDOW_EVAL().
  *
  * @param   k_t      Current time.
- * @param   k_t_low  Lower event window bound.
- * @param   k_t_high Upper event window bound.
+ * @param   k_t_low  Lower event window bound. <= 0 indicates no bound.
+ * @param   k_t_high Upper event window bound. <= 0 indicates no bound.
  */
 #define EVENT_WINDOW_INIT(k_t, k_t_low, k_t_high)                              \
     float _t_since_liftoff = k_t;                                              \
-    bool _grace_period_over = _t_since_liftoff >= k_t_low;                    \
-    bool _timed_out = _t_since_liftoff >= k_t_high;
+    bool _grace_period_over = _t_since_liftoff >= k_t_low;                     \
+    bool _timed_out = k_t_high > 0 && _t_since_liftoff >= k_t_high;            \
+    Reason_t _reason;
 
 /**
  * Evaluates whether or not an event should trigger. Should be preceeded by an
@@ -61,7 +71,15 @@
  * @ret     If the event should trigger.
  */
 #define EVENT_WINDOW_EVAL(k_conds_ok)                                          \
-    (_grace_period_over && (_timed_out || k_conds_ok))
+    ((_reason = (_timed_out ? Reason_t::TIMEOUT : Reason_t::CONDITION)) ||     \
+     (_grace_period_over && (_timed_out || k_conds_ok)))
+
+/**
+ * Gets a string representation of an event detection reason. Should be
+ * preceeded by an EVENT_WINDOW_EVAL() that evaluated to true.
+ */
+#define EVENT_WINDOW_REASON                                                    \
+    (_reason == Reason_t::CONDITION ? "CONDITION" : "TIMEOUT")
 
 /********************************* TYPEDEFS ***********************************/
 
@@ -99,7 +117,8 @@ typedef enum VehicleState : uint8_t
 } VehicleState_t;
 
 /**
- * State vector for main flight computer.
+ * State vector for main flight computer. Must be <= TELEM_PACKET_SIZE bytes in
+ * length.
  */
 typedef struct MainStateVector
 {
@@ -110,6 +129,8 @@ typedef struct MainStateVector
     float t_liftoff;
     float t_burnout;
     float t_canards;
+    float t_drogue;
+    float t_main;
 
     // Rocket state as estimated by nav filter.
     float altitude;
@@ -127,9 +148,6 @@ typedef struct MainStateVector
     float gyro_r;
     float gyro_p;
     float gyro_y;
-
-    // Event flags.
-    bool canards_deployed;
 
     // Current state of the flight computer.
     VehicleState_t state;
@@ -169,13 +187,17 @@ const uint8_t SYS_ONLINE_LED_PULSES = 3;
 const token_t FNW_TOKEN_NIL = 0x00; // Null token.
 const token_t FNW_TOKEN_AOK = 0xAA; // Something went OK.
 const token_t FNW_TOKEN_ERR = 0xBB; // Something went wrong.
-const token_t FNW_TOKEN_VEC = 0xCC; // State vector payload follows.
 
 /**
  * LED pulse configuration for component LEDs. Written once by main thread after
  * system startup, read many times by LED pulse thread.
  */
 extern PulseLEDs_t g_led_pulse_conf;
+
+/**
+ * ID of LED pulse thread created during startup.
+ */
+extern int32_t pulse_thread_id;
 
 /******************************** PROTOTYPES **********************************/
 
@@ -192,7 +214,6 @@ void fault(uint8_t k_pin, const char* k_msg, Status_t& k_stat);
  * Gets the time according to Arduino's millis(), reinterpreted as seconds.
  *
  * @ret     Current system time in seconds.
- * @return [description]
  */
 double time_s();
 

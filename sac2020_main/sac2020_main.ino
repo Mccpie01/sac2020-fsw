@@ -16,10 +16,14 @@
 #include "sac2020_main_pins.h"
 #include "sac2020_lib.h"
 
+/**
+ * Telemetry output to Flight Factory. Has no effect outside FF, and should get
+ * optimized out.
+ */
 #ifdef FF
     #define TELEM(data, ...)                                                   \
     {                                                                          \
-        ff::out("[#b$bsac2020#r] ");                                           \
+        ff::out("[#b$msonder#r] ");                                            \
         ff::out(data, ##__VA_ARGS__);                                          \
         ff::out("\n");                                                         \
     }
@@ -34,14 +38,6 @@
  */
 #define KGAIN_CALC_DEPTH 50
 /**
- * Variance in altimeter readings determined offboard. TODO
- */
-#define POS_VARIANCE 225
-/**
- * Variance in accelerometer readings determined offboard. TODO
- */
-#define ACC_VARIANCE 25
-/**
  * Number of seconds that must elapse before detecting liftoff via
  * accelerometer.
  */
@@ -50,7 +46,6 @@
 #else
     #define NO_LIFTOFF_GRACE_PERIOD_S 0
 #endif
-
 /**
  * Minimum acceleration rolling average required to declare liftoff and enter
  * powered flight state.
@@ -63,11 +58,16 @@
 /**
  * Altitude relative to launchpad at which to deploy canards. TODO
  */
-#define CANARD_DEPLOYMENT_ALTITUDE_M 100
+#define CANARD_DEPLOYMENT_ALTITUDE_M 500
 /**
  * Altitude relative to launchpad at which to deploy main parachute.
  */
 #define MAIN_DEPLOYMENT_ALTITUDE_M 457.2
+/**
+ * The index of imu::Vector<3> corresponding to the vertical direction. In the
+ * case of a BNO055 IMU calibrated flat on a table, this is the positive z axis.
+ */
+#define VERTICAL_AXIS_VECTOR_IDX 2
 
 /**
  * The following values define the time windows around detection of each flight
@@ -110,6 +110,8 @@
 #define SV_T_LIFTOFF   g_statevec.t_liftoff
 #define SV_T_BURNOUT   g_statevec.t_burnout
 #define SV_T_CANARDS   g_statevec.t_canards
+#define SV_T_DROGUE    g_statevec.t_drogue
+#define SV_T_MAIN      g_statevec.t_main
 #define SV_ALTITUDE    g_statevec.altitude
 #define SV_VELOCITY    g_statevec.velocity
 #define SV_ACCEL       g_statevec.acceleration
@@ -123,7 +125,6 @@
 #define SV_GYRO_R      g_statevec.gyro_r
 #define SV_GYRO_P      g_statevec.gyro_p
 #define SV_GYRO_Y      g_statevec.gyro_y
-#define SV_CANARDSDEP  g_statevec.canards_deployed
 #define SV_STATE       g_statevec.state
 
 /*********************************** GLOBALS **********************************/
@@ -141,7 +142,7 @@ photic::Barometer* g_baro;
 /**
  * Component statuses, set during startup.
  */
-Status_t g_baro_status  = Status_t::OFFLINE; // BMP85 barometer.
+Status_t g_baro_status  = Status_t::OFFLINE; // BMP085 barometer.
 Status_t g_imu_status   = Status_t::OFFLINE; // BNO055 IMU.
 Status_t g_pyro1_status = Status_t::OFFLINE; // Pyro 1.
 Status_t g_pyro2_status = Status_t::OFFLINE; // Pyro 2.
@@ -163,9 +164,10 @@ double g_x0;
  */
 bool g_sent_conclude_msg = false;
 /**
- * ID of LED pulse thread created during startup.
+ * Variance in altitude and acceleration readings, sampled during startup.
  */
-int32_t pulse_thread_id;
+float g_pos_variance;
+float g_acc_variance;
 
 /**
  * History for liftoff detection and metronome controlling its frequency.
@@ -222,6 +224,18 @@ void init_baro()
         return;
     }
 
+    // Estimate initial altitude via barometer. Measure variance in altitude
+    // readings for computing a Kalman gain.
+    photic::history<float> alts(LAUNCHPAD_ALTITUDE_EST_READINGS);
+    for (std::size_t i = 0; i < LAUNCHPAD_ALTITUDE_EST_READINGS; i++)
+    {
+        g_baro->update();
+        alts.add(g_baro->data().altitude);
+    }
+    g_pos_variance = alts.stdev() * alts.stdev();
+    SV_ALTITUDE = alts.mean();
+    g_x0 = SV_ALTITUDE;
+
     g_baro_status = Status_t::ONLINE;
 }
 
@@ -242,6 +256,20 @@ void init_imu()
         fault(PIN_LED_IMU_FAULT, "ERROR :: BNO055 INIT FAILED", g_imu_status);
         return;
     }
+
+    // Measure variance in acceleration readings for later computing a Kalman
+    // gain. This is the variance in a single axis, as only a (scalar) component
+    // of the measured acceleration vector enters the filter.
+    photic::history<float> accs(LAUNCHPAD_ALTITUDE_EST_READINGS);
+    for (std::size_t i = 0; i < LAUNCHPAD_ALTITUDE_EST_READINGS; i++)
+    {
+        g_imu->update();
+        // For a BNO055 laying flat on a table, Z will be up, which is the
+        // approximate direction of travel and should represent the most
+        // significant component of net acceleration.
+        accs.add(g_imu->data().accel_z);
+    }
+    g_acc_variance = accs.stdev() * accs.stdev();
 
     g_imu_status = Status_t::ONLINE;
 }
@@ -313,10 +341,10 @@ void update_sensors()
     imu::Quaternion orientation = ((Sac2020Imu*) g_imu)->quat();
     imu::Vector<3> accel_rocket(SV_ACCEL_X, SV_ACCEL_Y, SV_ACCEL_Z);
     imu::Vector<3> accel_world = orientation.rotateVector(accel_rocket);
-    SV_ACCEL_VERT = accel_world[2];
+    SV_ACCEL_VERT = accel_world[VERTICAL_AXIS_VECTOR_IDX];
 #else
-    // In Flight Factory, just use the magnitude, since the flight model is
-    // only 1 DoF.
+    // In Flight Factory, just use the vertical reading, since the flight model
+    // is only 1 DoF.
     SV_ACCEL_VERT = SV_ACCEL_Z;
 #endif
 }
@@ -330,7 +358,7 @@ void deploy_canards()
 }
 
 /**
- * Deploy the drogue parachute.
+ * Deploy the drogue parachute. TODO
  */
 void deploy_drogue()
 {
@@ -338,7 +366,7 @@ void deploy_drogue()
 }
 
 /**
- * Deploy the main parachute.
+ * Deploy the main parachute. TODO
  */
 void deploy_main()
 {
@@ -382,30 +410,19 @@ void setup()
     // Initialize subsystems.
     init_baro();
     init_imu();
-    TELEM("#b$g● SENSORS GO");
+    TELEM("#b$g● SENSORS  GO");
     init_servos();
+    TELEM("#b$g● CONTROL  GO");
     check_pyros();
     TELEM("#b$g● RECOVERY GO");
 
-    // Estimate initial altitude via barometer.
-    g_x0 = 0;
-    for (std::size_t i = 0; i < LAUNCHPAD_ALTITUDE_EST_READINGS; i++)
-    {
-        update_sensors();
-        g_x0 += g_baro->data().altitude;
-    }
-    g_x0 /= LAUNCHPAD_ALTITUDE_EST_READINGS;
-    SV_ALTITUDE = g_x0;
-
-    TELEM("Launchpad altitude set to %.2f m", SV_ALTITUDE);
-
     // Set up Kalman filter.
     g_kf.set_delta_t(g_mtr_kf.period());
-    g_kf.set_sensor_variance(POS_VARIANCE, ACC_VARIANCE);
+    g_kf.set_sensor_variance(g_pos_variance, g_acc_variance);
     g_kf.set_initial_estimate(g_x0, 0, 0);
     g_kf.compute_kg(KGAIN_CALC_DEPTH);
 
-    TELEM("#b$g● GNC GO");
+    TELEM("#b$g● GUIDANCE GO");
 
     // Build status LED pulse configuration.
     g_led_pulse_conf.pulses = SYS_ONLINE_LED_PULSES;
@@ -467,6 +484,9 @@ void setup()
     }
 #endif
 
+    TELEM("Launchpad altitude set to $y%.2f#r m", SV_ALTITUDE);
+    TELEM("Sampled altimeter variance: $y%.4f", g_pos_variance);
+    TELEM("Sampled accelerometer variance: $y%.4f", g_acc_variance);
     TELEM("Setup complete. Awaiting liftoff...");
 
 #ifdef FF
@@ -485,22 +505,60 @@ void setup()
  */
 void run_state_machine()
 {
+    // If in pre-liftoff state, monitor acceleration for a spike characteristic
+    // of liftoff. We do this with repeated returns in loop() as opposed to a
+    // blocking loop in setup() for compliance with Flight Factory.
+    if (SV_STATE == VehicleState_t::PRELTOFF)
+    {
+        // Add vertical acceleration to the rolling average.
+        if (g_mtr_lodet.poll(SV_TIME))
+        {
+            g_hist_lodet.add(SV_ACCEL_VERT);
+        }
+
+        // Evaluate transition conditions.
+        EVENT_WINDOW_INIT(SV_TIME, NO_LIFTOFF_GRACE_PERIOD_S, -1);
+        bool liftoff_conds_met =
+                g_hist_lodet.at_capacity() &&
+                g_hist_lodet.mean() >= LIFTOFF_ACCEL_TRIGGER_MPSSQ;
+        // Evaluate transition conditions.
+        if (EVENT_WINDOW_EVAL(liftoff_conds_met))
+        {
+            TELEM("Event $b%-7s#r at t+$y%06.2f#r by $r%-9s#r; acc=$y%.2f#r",
+                  "LIFTOFF", SV_TIME, EVENT_WINDOW_REASON, g_hist_lodet.mean());
+            SV_T_LIFTOFF = SV_TIME;
+            SV_STATE = VehicleState_t::PWFLIGHT;
+
+        #ifndef FF
+            // Join the LED pulse thread to ensure we have full command over DIO
+            // during flight without the need to synchronize.
+            threads.kill(pulse_thread_id);
+            threads.wait(pulse_thread_id, 1000); // Cap wait time at 1000 ms.
+        #endif
+
+            // Lower all LEDs to conserve power.
+            lower_leds();
+        }
+    }
     // If in powered flight, we're waiting for a timeout or sufficiently low
     // sustained acceleration to transition to cruising state.
-    if (SV_STATE == VehicleState_t::PWFLIGHT)
+    else if (SV_STATE == VehicleState_t::PWFLIGHT)
     {
+        // Add vertical acceleration to the rolling average.
         if (g_mtr_bodet.poll(SV_TIME))
         {
             g_hist_bodet.add(SV_ACCEL_VERT);
         }
 
+        // Evaluate transition conditions.
         EVENT_WINDOW_INIT(time_liftoff_s(), EVENT_BURNOUT_T_LOW_S,
                           EVENT_BURNOUT_T_HIGH_S);
         bool burnout_conds_met = g_hist_bodet.at_capacity() &&
                                  g_hist_bodet.mean() < 0;
         if (EVENT_WINDOW_EVAL(burnout_conds_met))
         {
-            TELEM("Burnout detected at t=%.2f", SV_TIME);
+            TELEM("Event $b%-7s#r at t+$y%06.2f#r by $r%-9s#r; acc=$y%.2f#r",
+                  "BURNOUT", SV_TIME, EVENT_WINDOW_REASON, g_hist_bodet.mean());
             SV_STATE = VehicleState_t::CRUISING;
             SV_T_BURNOUT = SV_TIME;
         }
@@ -509,13 +567,15 @@ void run_state_machine()
     // sufficiently high altitude estimate to trigger deployment.
     else if (SV_STATE == VehicleState_t::CRUISING)
     {
+        // Evaluate transition conditions.
         EVENT_WINDOW_INIT(time_liftoff_s(), EVENT_CANARDS_T_LOW_S,
                           EVENT_CANARDS_T_HIGH_S);
         bool canard_conds_met =
                 (SV_ALTITUDE - g_x0) >= CANARD_DEPLOYMENT_ALTITUDE_M;
         if (EVENT_WINDOW_EVAL(canard_conds_met))
         {
-            TELEM("Canards deployed at t=%.2f", SV_TIME);
+            TELEM("Event $b%-7s#r at t+$y%06.2f#r by $r%-9s#r; hgt=$y%.2f#r",
+                  "CANARDS", SV_TIME, EVENT_WINDOW_REASON, SV_ALTITUDE - g_x0);
             SV_STATE = VehicleState_t::CRSCANRD;
             SV_T_CANARDS = SV_TIME;
             deploy_canards();
@@ -525,19 +585,23 @@ void run_state_machine()
     // sustained negative velocity estimate to trigger apogee/drogue deployment.
     else if (SV_STATE == VehicleState::CRSCANRD)
     {
+        // Add velocity to the rolling average.
         if (g_mtr_apdet.poll(SV_TIME))
         {
             g_hist_apdet.add(SV_VELOCITY);
         }
 
+        // Evaluate transition conditions.
         EVENT_WINDOW_INIT(time_liftoff_s(), EVENT_APOGEE_T_LOW_S,
                           EVENT_APOGEE_T_HIGH_S);
         bool apogee_conds_met = g_hist_apdet.at_capacity() &&
                                 g_hist_apdet.mean() < 0;
         if (EVENT_WINDOW_EVAL(apogee_conds_met))
         {
-            TELEM("Drogue deployed at t=%.2f", SV_TIME);
+            TELEM("Event $b%-7s#r at t+$y%06.2f#r by $r%-9s#r; vel=$y%.2f#r",
+                  "DROGUE", SV_TIME, EVENT_WINDOW_REASON, g_hist_apdet.mean());
             SV_STATE = VehicleState_t::FALLDROG;
+            SV_T_DROGUE = SV_TIME;
             deploy_drogue();
         }
     }
@@ -545,14 +609,17 @@ void run_state_machine()
     // sufficiently low altitude estimate to trigger main deployment.
     else if (SV_STATE == VehicleState_t::FALLDROG)
     {
+        // Evaluate transition conditions.
         EVENT_WINDOW_INIT(time_liftoff_s(), EVENT_MAIN_T_LOW_S,
                           EVENT_MAIN_T_HIGH_S);
         bool main_conds_met =
-                (SV_ALTITUDE - g_x0) >= MAIN_DEPLOYMENT_ALTITUDE_M;
+                (SV_ALTITUDE - g_x0) <= MAIN_DEPLOYMENT_ALTITUDE_M;
         if (EVENT_WINDOW_EVAL(main_conds_met))
         {
-            TELEM("Main deployed at t=%.2f", SV_TIME);
+            TELEM("Event $b%-7s#r at t+$y%06.2f#r by $r%-9s#r; hgt=$y%.2f#r",
+                  "MAIN", SV_TIME, EVENT_WINDOW_REASON, SV_ALTITUDE - g_x0);
             SV_STATE = VehicleState_t::FALLMAIN;
+            SV_T_MAIN = SV_TIME;
             deploy_main();
         }
     }
@@ -561,9 +628,10 @@ void run_state_machine()
     // the mission and ceasing meaningful operation.
     else if (SV_STATE == VehicleState::FALLMAIN)
     {
+        // Evaluate transition conditions.
         if (time_liftoff_s() >= EVENT_CONCLUDE_T_HIGH_S)
         {
-            TELEM("Mission concluded at t=%.2f", SV_TIME);
+            TELEM("Event $%-7s#r at t+$y%06.2f#r", "CONCLUDE", SV_TIME);
             SV_STATE = VehicleState::CONCLUDE;
         }
     }
@@ -581,50 +649,17 @@ void loop()
         return;
     }
 
-    // Fetch a timestamp for this system iteration.
+    // Timestamp this system iteration.
     SV_TIME = time_s();
 
     // Update sensors and dump their readings into the state vector.
     update_sensors();
 
-    // If in pre-liftoff state, monitor acceleration for a spike characteristic
-    // of liftoff. We do this with repeated returns in loop() as opposed to a
-    // blocking loop in setup() for compliance with Flight Factory.
-    if (SV_STATE == VehicleState_t::PRELTOFF)
-    {
-        // Wait for liftoff while the grace period is active and the proper
-        // acceleration has not yet been sensed.
-        if (SV_TIME < NO_LIFTOFF_GRACE_PERIOD_S ||
-            (g_hist_lodet.at_capacity() &&
-             g_hist_lodet.mean() < LIFTOFF_ACCEL_TRIGGER_MPSSQ))
-        {
-            // Add to the liftoff detection history according to the metronome.
-            if (g_mtr_lodet.poll(SV_TIME))
-            {
-                g_hist_lodet.add(accel_magnitude());
-            }
-            return;
-        }
+    // Perform state transitions.
+    run_state_machine();
 
-        TELEM("Liftoff detected at t=%.2f", SV_TIME);
-
-        // You can't take the sky from me.
-        SV_T_LIFTOFF = time_s();
-        SV_STATE = VehicleState_t::PWFLIGHT;
-
-        // Join the LED pulse thread to ensure we have full command over DIO
-        // during flight without the need to synchronize.
-    #ifndef FF
-        threads.kill(pulse_thread_id);
-        threads.wait(pulse_thread_id, 1000); // Cap wait time at 1000 ms.
-    #endif
-
-        // Lower all LEDs to conserve power.
-        lower_leds();
-    }
-
-    // KINETIC STATE ESTIMATION. The Kalman filter updates our estimate of the
-    // rocket's kinetic state. This runs in every state except pre-liftoff.
+    // The Kalman filter updates our estimate of the rocket's kinetic state.
+    // This runs in every state except pre-liftoff.
     bool do_kf = SV_STATE != VehicleState_t::PRELTOFF;
     if (do_kf && g_mtr_kf.poll(SV_TIME))
     {
@@ -651,8 +686,7 @@ void loop()
     if (do_telemtx && g_mtr_telemtx.poll(SV_TIME))
     {
     #ifdef USING_FNW
-        // Create a buffer of zeros the size of a telemetry packet and copy in
-        // the state vector.
+        // Pack metadata token and state vector into a buffer and send to aux.
         uint8_t packet[TELEM_PACKET_SIZE];
         memset(packet, 0, TELEM_PACKET_SIZE);
         memcpy(packet, &g_statevec, sizeof(g_statevec));
@@ -668,7 +702,4 @@ void loop()
             return;
         }
     }
-
-    // Perform state transitions.
-    run_state_machine();
 }

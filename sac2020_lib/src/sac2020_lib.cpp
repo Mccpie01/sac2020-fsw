@@ -20,6 +20,8 @@ namespace std
 
 PulseLEDs_t g_led_pulse_conf;
 
+int32_t pulse_thread_id;
+
 void fault(uint8_t k_pin, const char* k_msg, Status_t& k_stat)
 {
     digitalWrite(k_pin, HIGH);
