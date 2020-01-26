@@ -14,21 +14,15 @@ namespace std
     void __throw_length_error(const char* e) {}
 }
 
-#ifndef FF
-    Threads::Mutex g_dio_lock;
-#endif
-
-PulseLEDs_t g_led_pulse_conf;
-
-int32_t pulse_thread_id;
-
-void fault(uint8_t k_pin, const char* k_msg, Status_t& k_stat)
+void fault(uint8_t k_pin, const char* k_msg, Status_t& k_stat,
+           LEDController* k_ledc)
 {
     digitalWrite(k_pin, HIGH);
 #ifdef DEBUG_SERIAL
     DEBUG_SERIAL.println(k_msg);
 #endif
     k_stat = Status_t::FAULT;
+    k_ledc->flip(k_pin);
 }
 
 double time_s()
@@ -37,38 +31,61 @@ double time_s()
 }
 
 #ifndef FF
-void pulse_leds(const PulseLEDs_t k_conf)
+LEDController::LEDController(std::vector<uint8_t> k_pins)
 {
-    // For each LED pulse...
-    for (uint8_t i = 0; i < k_conf.pulses; i++)
+    for (uint8_t& pin : k_pins)
     {
-        // Raise all LEDs.
-        g_dio_lock.lock();
-        for (size_t j = 0; j < k_conf.pins.size(); j++)
-        {
-            digitalWrite(k_conf.pins[j], HIGH);
-        }
-        g_dio_lock.unlock();
+        Pin_t pin_conf = {pin, true, false, -1};
+        m_pins.push_back(pin_conf);
+        pinMode(pin, OUTPUT);
+    }
+}
 
-        // Sleep for a bit.
-        threads.delay(100);
-
-        // Lower all LEDs.
-        g_dio_lock.lock();
-        for (size_t j = 0; j < k_conf.pins.size(); j++)
+void LEDController::flip(uint8_t k_pin)
+{
+    for (Pin_t& pin : m_pins)
+    {
+        if (pin.num == k_pin)
         {
-            digitalWrite(k_conf.pins[j], LOW);
-        }
-        g_dio_lock.unlock();
-
-        // Sleep for another bit if not the last pulse.
-        if (i != k_conf.pulses - 1)
-        {
-            threads.delay(100);
+            pin.flash = !pin.flash;
+            return;
         }
     }
+}
 
-    // Big delay between pulses.
-    threads.delay(900);
+void LEDController::run(float k_t)
+{
+    for (Pin_t& pin : m_pins)
+    {
+        if (pin.flash)
+        {
+            if (pin.t_flash_last == -1 ||
+                k_t - pin.t_flash_last > 1.0 / LEDController::PULSES)
+            {
+                pin.high = !pin.high;
+                pin.t_flash_last = k_t;
+            }
+        }
+
+        digitalWrite(pin.num, pin.high ? HIGH : LOW);
+    }
+}
+
+void LEDController::lower_all()
+{
+    for (Pin_t& pin : m_pins)
+    {
+        pin.high = false;
+        digitalWrite(pin.num, LOW);
+    }
+}
+
+void LEDController::raise_all()
+{
+    for (Pin_t& pin : m_pins)
+    {
+        pin.high = true;
+        digitalWrite(pin.num, HIGH);
+    }
 }
 #endif

@@ -1,3 +1,17 @@
+/**
+ *                    ---------- STATUS LEDS ----------
+ *
+ * Status LEDs light up on the board as each component is initialized. This
+ * does not necessarily mean the initialization was successful. Only when ERR
+ * lights up is setup complete, and the LEDs are indicative of anything.
+ *
+ * If an LED is solid, that component initialized successfully. If an LED is
+ * flashing, that component failed. If an LED is not on whatsoever, something
+ * has gone very, very wrong.
+ *
+ * On launch day, you're looking for all LEDs to be solid.
+ */
+
 #ifdef FF
     #include "ff_arduino_harness.hpp"
     #include <string.h>
@@ -17,8 +31,8 @@
 #include "sac2020_lib.h"
 
 /**
- * Telemetry output to Flight Factory. Has no effect outside FF, and should get
- * optimized out.
+ * Telemetry output. This output goes to the terminal in FF (and supports FF
+ * formatting) and goes to DEBUG_SERIAL in Teensyduino.
  */
 #ifdef FF
     #define TELEM(data, ...)                                                   \
@@ -28,7 +42,10 @@
         ff::out("\n");                                                         \
     }
 #else
-    #define TELEM(data, ...) {}
+    #define TELEM(data, ...)                                                   \
+    {                                                                          \
+        DEBUG_SERIAL.printf(data "\n", ##__VA_ARGS__);                         \
+    }
 #endif
 
 /******************************** CONFIGURATION ********************************/
@@ -42,7 +59,11 @@
  * accelerometer.
  */
 #ifndef FF
-    #define NO_LIFTOFF_GRACE_PERIOD_S 10 * 60
+    #ifdef GROUND_TEST
+        #define NO_LIFTOFF_GRACE_PERIOD_S 0
+    #else
+        #define NO_LIFTOFF_GRACE_PERIOD_S 10 * 60
+    #endif
 #else
     #define NO_LIFTOFF_GRACE_PERIOD_S 0
 #endif
@@ -50,7 +71,11 @@
  * Minimum acceleration rolling average required to declare liftoff and enter
  * powered flight state.
  */
-#define LIFTOFF_ACCEL_TRIGGER_MPSSQ 4 * photic::EARTH_SLGRAV_MPSSQ
+#ifdef GROUND_TEST
+    #define LIFTOFF_ACCEL_TRIGGER_MPSSQ 1
+#else
+    #define LIFTOFF_ACCEL_TRIGGER_MPSSQ 3 * photic::EARTH_SLGRAV_MPSSQ
+#endif
 /**
  * Number of pressure readings taken on startup to estimate launchpad altitude.
  */
@@ -202,7 +227,12 @@ MainStateVector_t g_statevec;
  * Metronome controlling the frequency at which state vectors are sent to
  * the aux computer for SD backup and transmission to ground.
  */
-photic::Metronome g_mtr_telemtx(2);
+photic::Metronome g_mtr_telemtx(4);
+
+/**
+ * Controller for status LEDs.
+ */
+LEDController* g_ledc = nullptr;
 
 /********************************* FUNCTIONS **********************************/
 
@@ -218,11 +248,16 @@ void init_baro()
         new Sac2020Barometer();
     #endif
 
+    TELEM("Contacting barometer...");
+
     if (!g_baro->init())
     {
-        fault(PIN_LED_BARO_FAULT, "ERROR :: BMP085 INIT FAILED", g_baro_status);
+        fault(PIN_LED_BARO_FAULT, "ERROR :: BMP085 INIT FAILED", g_baro_status,
+              g_ledc);
         return;
     }
+
+    TELEM("Sampling launchpad altitude...");
 
     // Estimate initial altitude via barometer. Measure variance in altitude
     // readings for computing a Kalman gain.
@@ -235,6 +270,9 @@ void init_baro()
     g_pos_variance = alts.stdev() * alts.stdev();
     SV_ALTITUDE = alts.mean();
     g_x0 = SV_ALTITUDE;
+
+    TELEM("Launchpad altitude set to $y%.2f#r m", SV_ALTITUDE);
+    TELEM("Sampled altimeter variance: $y%.4f", g_pos_variance);
 
     g_baro_status = Status_t::ONLINE;
 }
@@ -251,11 +289,16 @@ void init_imu()
         new Sac2020Imu();
     #endif
 
+    TELEM("Contacting IMU...");
+
     if (!g_imu->init())
     {
-        fault(PIN_LED_IMU_FAULT, "ERROR :: BNO055 INIT FAILED", g_imu_status);
+        fault(PIN_LED_IMU_FAULT, "ERROR :: BNO055 INIT FAILED", g_imu_status,
+              g_ledc);
         return;
     }
+
+    TELEM("Sampling accelerometer variance...");
 
     // Measure variance in acceleration readings for later computing a Kalman
     // gain. This is the variance in a single axis, as only a (scalar) component
@@ -270,6 +313,8 @@ void init_imu()
         accs.add(g_imu->data().accel_z);
     }
     g_acc_variance = accs.stdev() * accs.stdev();
+
+    TELEM("Sampled accelerometer variance: $y%.4f", g_acc_variance);
 
     g_imu_status = Status_t::ONLINE;
 }
@@ -291,30 +336,6 @@ void init_servos()
 void check_pyros()
 {
 
-}
-
-/**
- * Function run by the LED pulse thread during startup and countdown.
- */
-void pulse_thread_func()
-{
-    while (true)
-    {
-    #ifndef FF
-        pulse_leds(g_led_pulse_conf);
-    #endif
-    }
-}
-
-/**
- * Lower all status LEDs.
- */
-inline void lower_leds()
-{
-    digitalWrite(PIN_LED_BARO_FAULT, LOW);
-    digitalWrite(PIN_LED_IMU_FAULT, LOW);
-    digitalWrite(PIN_LED_PYRO1_FAULT, LOW);
-    digitalWrite(PIN_LED_PYRO2_FAULT, LOW);
 }
 
 /**
@@ -407,14 +428,69 @@ void setup()
     memset(&g_statevec, 0, sizeof(MainStateVector_t));
     SV_STATE = VehicleState_t::PRELTOFF;
 
+    // Set up status LED controller.
+    g_ledc = new LEDController({PIN_LED_SYS_FAULT,
+                                PIN_LED_IMU_FAULT,
+                                PIN_LED_PYRO1_FAULT,
+                                PIN_LED_PYRO2_FAULT,
+                                PIN_LED_FNW_FAULT,
+                                PIN_LED_BARO_FAULT});
+
+#ifdef USING_FNW
+    TELEM("Contacting aux node...");
+
+    // Send handshake packet to aux.
+    FNW_SERIAL.begin(FNW_BAUD);
+    uint8_t packet_tx[FNW_PACKET_SIZE];
+    packet_tx[0] = FNW_TOKEN_HSH;
+    FNW_SERIAL.write(packet_tx, FNW_PACKET_SIZE);
+
+    // Wait for echo from aux.
+    float t_handshake_start = time_s();
+    while (!FNW_PACKET_AVAILABLE &&
+           time_s() - t_handshake_start < FNW_CONN_TIMEOUT);
+
+    if (FNW_PACKET_AVAILABLE)
+    {
+        // Read in response packet and check tokens.
+        uint8_t packet_rx[FNW_PACKET_SIZE];
+        memset(packet_rx, FNW_TOKEN_ERR, FNW_PACKET_SIZE);
+        FNW_SERIAL.readBytes(packet_rx, FNW_PACKET_SIZE);
+        bool ok = true;
+
+        for (size_t i = 0; i < FNW_PACKET_SIZE; i++)
+        {
+            // If there is a byte mismatch in the echoed packet, something
+            // went wrong.
+            if (packet_rx[i] != packet_tx[i])
+            {
+                ok = false;
+                fault(PIN_LED_FNW_FAULT, "ERROR :: BAD HANDSHAKE WITH AUX",
+                      g_fnw_status, g_ledc);
+                break;
+            }
+        }
+
+        // Otherwise, all is well.
+        if (ok)
+        {
+            TELEM("Handshake exchanged with aux!");
+            g_fnw_status = Status_t::ONLINE;
+        }
+    }
+    else
+    {
+        // Handshake timed out--something is wrong.
+        fault(PIN_LED_FNW_FAULT, "ERROR :: FAILED TO CONTACT AUX", g_fnw_status,
+              g_ledc);
+    }
+#endif
+
     // Initialize subsystems.
     init_baro();
     init_imu();
-    TELEM("#b$g● SENSORS  GO");
     init_servos();
-    TELEM("#b$g● CONTROL  GO");
     check_pyros();
-    TELEM("#b$g● RECOVERY GO");
 
     // Set up Kalman filter.
     g_kf.set_delta_t(g_mtr_kf.period());
@@ -422,71 +498,12 @@ void setup()
     g_kf.set_initial_estimate(g_x0, 0, 0);
     g_kf.compute_kg(KGAIN_CALC_DEPTH);
 
-    TELEM("#b$g● GUIDANCE GO");
-
-    // Build status LED pulse configuration.
-    g_led_pulse_conf.pulses = SYS_ONLINE_LED_PULSES;
-    if (g_baro_status == Status::ONLINE)
-    {
-        g_led_pulse_conf.pins.push_back(PIN_LED_BARO_FAULT);
-    }
-    if (g_imu_status == Status::ONLINE)
-    {
-        g_led_pulse_conf.pins.push_back(PIN_LED_IMU_FAULT);
-    }
-    if (g_pyro1_status == Status::ONLINE)
-    {
-        g_led_pulse_conf.pins.push_back(PIN_LED_PYRO1_FAULT);
-    }
-    if (g_pyro2_status == Status::ONLINE)
-    {
-        g_led_pulse_conf.pins.push_back(PIN_LED_PYRO2_FAULT);
-    }
-
     // Determine if everything initialized correctly.
     bool ok = g_baro_status  == Status_t::ONLINE &&
               g_imu_status   == Status_t::ONLINE &&
               g_pyro1_status == Status_t::ONLINE &&
               g_pyro2_status == Status_t::ONLINE;
 
-#ifdef USING_FNW
-    // Send the aux computer my status.
-    token_t tok_status = ok ? FNW_TOKEN_AOK : FNW_TOKEN_ERR;
-    FNW_SERIAL.begin(FNW_BAUD);
-    FNW_SERIAL.write(&tok_status, sizeof(token_t));
-
-    // Wait for confirmation from aux computer.
-    while (FNW_SERIAL.peek() == -1);
-    token_t tok = FNW_TOKEN_NIL;
-    FNW_SERIAL.readBytes(&tok, sizeof(token_t));
-
-    if (tok != FNW_TOKEN_AOK)
-    {
-        fault(PIN_LED_FNW_FAULT, "ERROR :: FAILED TO HANDSHAKE WITH AUX",
-              g_fnw_status);
-    }
-    else
-    {
-        g_fnw_status = Status_t::ONLINE;
-        g_led_pulse_conf.pins.push_back(PIN_LED_FNW_FAULT);
-    }
-#endif
-
-    // Dispatch LED pulse thread.
-#ifndef FF
-    pulse_thread_id = threads.addThread(pulse_thread_func);
-    if (pulse_thread_id == -1)
-    {
-    #ifdef DEBUG_SERIAL
-        DEBUG_SERIAL.println("ERROR :: FAILED TO CREATE LED PULSE THREAD");
-    #endif
-        exit(1);
-    }
-#endif
-
-    TELEM("Launchpad altitude set to $y%.2f#r m", SV_ALTITUDE);
-    TELEM("Sampled altimeter variance: $y%.4f", g_pos_variance);
-    TELEM("Sampled accelerometer variance: $y%.4f", g_acc_variance);
     TELEM("Setup complete. Awaiting liftoff...");
 
 #ifdef FF
@@ -516,11 +533,15 @@ void run_state_machine()
             g_hist_lodet.add(SV_ACCEL_VERT);
         }
 
+        // Run status LED controller.
+        g_ledc->run(SV_TIME);
+
         // Evaluate transition conditions.
         EVENT_WINDOW_INIT(SV_TIME, NO_LIFTOFF_GRACE_PERIOD_S, -1);
         bool liftoff_conds_met =
                 g_hist_lodet.at_capacity() &&
                 g_hist_lodet.mean() >= LIFTOFF_ACCEL_TRIGGER_MPSSQ;
+
         // Evaluate transition conditions.
         if (EVENT_WINDOW_EVAL(liftoff_conds_met))
         {
@@ -529,15 +550,8 @@ void run_state_machine()
             SV_T_LIFTOFF = SV_TIME;
             SV_STATE = VehicleState_t::PWFLIGHT;
 
-        #ifndef FF
-            // Join the LED pulse thread to ensure we have full command over DIO
-            // during flight without the need to synchronize.
-            threads.kill(pulse_thread_id);
-            threads.wait(pulse_thread_id, 1000); // Cap wait time at 1000 ms.
-        #endif
-
             // Lower all LEDs to conserve power.
-            lower_leds();
+            g_ledc->lower_all();
         }
     }
     // If in powered flight, we're waiting for a timeout or sufficiently low
@@ -633,6 +647,9 @@ void run_state_machine()
         {
             TELEM("Event $%-7s#r at t+$y%06.2f#r", "CONCLUDE", SV_TIME);
             SV_STATE = VehicleState::CONCLUDE;
+
+            // Raise all LEDs as indication to recovery team.
+            g_ledc->raise_all();
         }
     }
     // Otherwise, we're in VehicleState_t::CONCLUDE.
@@ -687,11 +704,11 @@ void loop()
     {
     #ifdef USING_FNW
         // Pack metadata token and state vector into a buffer and send to aux.
-        uint8_t packet[TELEM_PACKET_SIZE];
-        memset(packet, 0, TELEM_PACKET_SIZE);
-        memcpy(packet, &g_statevec, sizeof(g_statevec));
+        uint8_t packet[FNW_PACKET_SIZE];
+        packet[0] = FNW_TOKEN_VEC;
+        memcpy(packet + 1, &g_statevec, sizeof(g_statevec));
         // Transmit state vector.
-        FNW_SERIAL.write(packet, TELEM_PACKET_SIZE);
+        FNW_SERIAL.write(packet, FNW_PACKET_SIZE);
     #endif
 
         // If the mission is over, this telemetry transmission becomes the last

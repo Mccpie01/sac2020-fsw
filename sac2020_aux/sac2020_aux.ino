@@ -38,6 +38,16 @@ Status_t g_fnw_status = Status_t::OFFLINE; // Flight computer network.
  */
 bool g_liftoff = false;
 
+/**
+ * Whether or not FNW indicator LED is lit.
+ */
+bool g_telemtx_led = false;
+
+/**
+ * Controller for status LEDs.
+ */
+LEDController* g_ledc = nullptr;
+
 /********************************* FUNCTIONS **********************************/
 
 /**
@@ -46,13 +56,13 @@ bool g_liftoff = false;
  */
 void init_sd()
 {
-    static const char TEST_FNAME[] = "SDVALIDATE";
+    static const char TEST_FNAME[] = "SDVAL";
     static const char TEST_BUF[]   = "Rage against the dying of the light.";
 
     // Attempt to initialize library.
-    if (!SD.begin())
+    if (!SD.begin(PIN_SDCARD_CHIPSEL))
     {
-        fault(PIN_LED_SD_FAULT, "ERROR :: SD INIT FAILED", g_sd_status);
+        fault(PIN_LED_SD_FAULT, "ERROR :: SD INIT FAILED", g_sd_status, g_ledc);
         return;
     }
 
@@ -62,7 +72,8 @@ void init_sd()
     out.close();
     if (bytes_written != sizeof TEST_BUF)
     {
-        fault(PIN_LED_SD_FAULT, "ERROR :: SD TEST WRITE FAILED", g_sd_status);
+        fault(PIN_LED_SD_FAULT, "ERROR :: SD TEST WRITE FAILED", g_sd_status,
+              g_ledc);
         return;
     }
 
@@ -73,7 +84,8 @@ void init_sd()
     in.close();
     if (strcmp(buf, TEST_BUF))
     {
-        fault(PIN_LED_SD_FAULT, "ERROR :: SD TEST READ FAILED", g_sd_status);
+        fault(PIN_LED_SD_FAULT, "ERROR :: SD TEST READ FAILED", g_sd_status,
+              g_ledc);
         return;
     }
 
@@ -81,7 +93,8 @@ void init_sd()
     SD.remove(TEST_FNAME);
     if (SD.exists(TEST_FNAME))
     {
-        fault(PIN_LED_SD_FAULT, "ERROR :: SD TEST REMOVE FAILED", g_sd_status);
+        fault(PIN_LED_SD_FAULT, "ERROR :: SD TEST REMOVE FAILED", g_sd_status,
+              g_ledc);
         return;
     }
 
@@ -95,7 +108,8 @@ void init_gps()
 {
     if (!g_gps.begin(9600))
     {
-        fault(PIN_LED_GPS_FAULT, "ERROR :: GPS INIT FAILED", g_gps_status);
+        fault(PIN_LED_GPS_FAULT, "ERROR :: GPS INIT FAILED", g_gps_status,
+              g_ledc);
         return;
     }
 
@@ -120,42 +134,21 @@ void init_rfm()
 
     if (!g_rfm.init())
     {
-        fault(PIN_LED_RFM_FAULT, "ERROR :: RFM INIT FAILED", g_rfm_status);
+        fault(PIN_LED_RFM_FAULT, "ERROR :: RFM INIT FAILED", g_rfm_status,
+              g_ledc);
         return;
     }
 
     if (!g_rfm.setFrequency(RFM_FREQ))
     {
         fault(PIN_LED_RFM_FAULT, "ERROR :: FAILED TO SET RFM FREQ",
-              g_rfm_status);
+              g_rfm_status, g_ledc);
         return;
     }
 
     g_rfm.setTxPower(23, true);
 
     g_rfm_status = Status_t::ONLINE;
-}
-
-/**
- * Function run by the LED pulse thread during startup and countdown.
- */
-void pulse_thread_func()
-{
-    while (true)
-    {
-        pulse_leds(g_led_pulse_conf);
-    }
-}
-
-/**
- * Lower all status LEDs.
- */
-inline void lower_leds()
-{
-    digitalWrite(PIN_LED_SD_FAULT, LOW);
-    digitalWrite(PIN_LED_GPS_FAULT, LOW);
-    digitalWrite(PIN_LED_RFM_FAULT, LOW);
-    digitalWrite(PIN_LED_FNW_FAULT, LOW);
 }
 
 /*********************************** SETUP ************************************/
@@ -167,58 +160,18 @@ void setup()
     while (!DEBUG_SERIAL);
 #endif
 
+    FNW_SERIAL.begin(FNW_BAUD);
+
+    // Set up status LED controller.
+    g_ledc = new LEDController({PIN_LED_SD_FAULT,
+                                PIN_LED_RFM_FAULT,
+                                PIN_LED_GPS_FAULT,
+                                PIN_LED_FNW_FAULT});
+
     // Initialize subsystems.
     init_sd();
     init_gps();
     init_rfm();
-
-    // Build status LED pulse configuration.
-    g_led_pulse_conf.pulses = SYS_ONLINE_LED_PULSES;
-    if (g_sd_status == Status::ONLINE)
-    {
-        g_led_pulse_conf.pins.push_back(PIN_LED_SD_FAULT);
-    }
-    if (g_gps_status == Status::ONLINE)
-    {
-        g_led_pulse_conf.pins.push_back(PIN_LED_GPS_FAULT);
-    }
-    if (g_rfm_status == Status::ONLINE)
-    {
-        g_led_pulse_conf.pins.push_back(PIN_LED_RFM_FAULT);
-    }
-
-#ifdef USING_FNW
-    // Initialize flight network line and wait for status token from main FC.
-    FNW_SERIAL.begin(FNW_BAUD);
-    while (FNW_SERIAL.available() == 0);
-    token_t tok = FNW_TOKEN_NIL;
-    FNW_SERIAL.readBytes(&tok, sizeof(token_t));
-
-    // Send acknowledgement of receipt.
-    token_t tok_ack = FNW_TOKEN_AOK;
-    FNW_SERIAL.write(&tok_ack, sizeof(token_t));
-
-    if (tok != FNW_TOKEN_AOK)
-    {
-        fault(PIN_LED_FNW_FAULT, "ERROR :: FAILED TO HANDSHAKE WITH MAIN",
-              g_fnw_status);
-    }
-    else
-    {
-        g_fnw_status = Status_t::ONLINE;
-        g_led_pulse_conf.pins.push_back(PIN_LED_FNW_FAULT);
-    }
-#endif
-
-    // Dispatch LED pulse thread.
-    pulse_thread_id = threads.addThread(pulse_thread_func);
-    if (pulse_thread_id == -1)
-    {
-    #ifdef DEBUG_SERIAL
-        DEBUG_SERIAL.println("ERROR :: FAILED TO CREATE LED PULSE THREAD");
-    #endif
-        exit(1);
-    }
 
     // Determine if everything initialized correctly.
     bool ok = g_sd_status  == Status_t::ONLINE
@@ -234,31 +187,58 @@ void setup()
 
 void loop()
 {
+    // Flash LEDs while on pad.
+    if (!g_liftoff)
+    {
+        g_ledc->run(time_s());
+    }
+
 #ifdef USING_FNW
     // Check for state vector receipt from main. Main should only start sending
     // these after liftoff.
-    if (FNW_SERIAL.available() >= TELEM_PACKET_SIZE)
+    if (FNW_PACKET_AVAILABLE)
     {
-        // If this is the first telemetry packet received, the rocket has
-        // entered flight--kill the LEDs.
+        uint8_t packet[FNW_PACKET_SIZE];
+        FNW_SERIAL.readBytes(packet, FNW_PACKET_SIZE);
+
+        // If leading token indicates handshake, echo the packet back without
+        // saving.
+        if (packet[0] == FNW_TOKEN_HSH)
+        {
+            FNW_SERIAL.write(packet, FNW_PACKET_SIZE);
+            return;
+        }
+
+        // Otherwise, it's a state vector, so we have entered flight.
         if (!g_liftoff)
         {
             g_liftoff = true;
-            threads.kill(pulse_thread_id);
-            threads.wait(pulse_thread_id, 1000); // Cap wait time at 1000 ms.
-            lower_leds();
+            g_ledc->lower_all();
         }
 
-        // Read entire packet into memory and dump to SD card.
+        // Copy into struct and write to SD.
         MainStateVector_t vec;
-        FNW_SERIAL.readBytes((uint8_t*) (&vec), sizeof(vec));
+        memcpy(&vec, packet + 1, sizeof(vec));
         File out = SD.open(TELEM_FNAME, FILE_WRITE);
         out.write((uint8_t*) (&vec), sizeof(vec));
         out.close();
 
+        // If the state was VehicleState_t::CONCLUDE, the flight is over--raise
+        // all LEDs as indication to recovery team.
+        if (vec.state == VehicleState_t::CONCLUDE)
+        {
+            g_ledc->raise_all();
+        }
+        // Otherwise, flash LED to indicate telemetry activity.
+        else
+        {
+            g_telemtx_led = !g_telemtx_led;
+            digitalWrite(PIN_LED_FNW_FAULT, g_telemtx_led ? HIGH : LOW);
+        }
+
         // Transmit to ground station via RF module.
-        g_rfm.send((uint8_t) (&vec), sizeof(vec));
-        g_rfm.waitPacketSent();
+        // g_rfm.send((uint8_t) (&vec), sizeof(vec));
+        // g_rfm.waitPacketSent();
     }
 #endif
 }

@@ -3,8 +3,14 @@
 
 #include <vector>
 
+#include "sac2020_state.h"
+
 #ifndef FF
-    #include <TeensyThreads.h>
+    /**
+     * Whether or not computer is being tested on the ground, inert, outside
+     * of a rocket. THIS SHOULD BE COMMENTED OUT ON LAUNCH DAY.
+     */
+    #define GROUND_TEST
 
     /**
      * Toggles debug prints to Serial.
@@ -33,9 +39,17 @@
      * Arduino serial rx/tx buffers must be >= this number. The buffer size is
      * 64 by default and may need to be modified in the Serial source code.
      */
-    #define TELEM_PACKET_SIZE 128
-#else
-    #include <cstdint>
+    #define FNW_PACKET_SIZE 127
+
+    /**
+     * Maximum time to wait for a handshake when establishing FNW connection.
+     */
+    #define FNW_CONN_TIMEOUT 5
+
+    /**
+     * Whether or not a packet was received over FNW.
+     */
+    #define FNW_PACKET_AVAILABLE (FNW_SERIAL.available() == FNW_PACKET_SIZE)
 #endif
 
 /**
@@ -94,75 +108,6 @@ typedef enum Status : uint8_t
 } Status_t;
 
 /**
- * Configuration for LED status pulses.
- */
-typedef struct PulseLEDs
-{
-    uint8_t pulses;            // Number of pulses (flashes) per LED.
-    std::vector<uint8_t> pins; // LED pins to pulse.
-} PulseLEDs_t;
-
-/**
- * All possible vehicle states, used in state machine management.
- */
-typedef enum VehicleState : uint8_t
-{
-    PRELTOFF, // Pre-liftoff; sitting on the pad.
-    PWFLIGHT, // Powered flight; motor burning.
-    CRUISING, // Motor spent, still ascending.
-    CRSCANRD, // Cruising with canards deployed.
-    FALLDROG, // Falling under drogue parachute.
-    FALLMAIN, // Falling under main parachute.
-    CONCLUDE  // Flight over, with rocket likely grounded.
-} VehicleState_t;
-
-/**
- * State vector for main flight computer. Must be <= TELEM_PACKET_SIZE bytes in
- * length.
- */
-typedef struct MainStateVector
-{
-    // Timestamp.
-    float time;
-
-    // Timestamps for flight events.
-    float t_liftoff;
-    float t_burnout;
-    float t_canards;
-    float t_drogue;
-    float t_main;
-
-    // Rocket state as estimated by nav filter.
-    float altitude;
-    float velocity;
-    float acceleration;
-    float accel_vertical;
-
-    // Sensor values of interest.
-    float pressure;
-    float temperature;
-    float baro_altitude;
-    float accel_x;
-    float accel_y;
-    float accel_z;
-    float gyro_r;
-    float gyro_p;
-    float gyro_y;
-
-    // Current state of the flight computer.
-    VehicleState_t state;
-
-} MainStateVector_t;
-
-/**
- * State vector for auxiliary flight computer.
- */
-typedef struct AuxStateVector
-{
-
-} AuxStateVector_t;
-
-/**
  * Tokens are 1-byte pieces of metadata sent between flight computers.
  */
 typedef uint8_t token_t;
@@ -170,36 +115,79 @@ typedef uint8_t token_t;
 /********************************* GLOBALS ************************************/
 
 /**
- * Number of LED pulses that indicate successful initialization of a component.
- */
-const uint8_t SYS_ONLINE_LED_PULSES = 3;
-
-/**
- * Lock for synchronizing digital IO.
- */
-#ifndef FF
-    extern Threads::Mutex g_dio_lock;
-#endif
-
-/**
  * Tokens sent between flight computers.
  */
 const token_t FNW_TOKEN_NIL = 0x00; // Null token.
 const token_t FNW_TOKEN_AOK = 0xAA; // Something went OK.
 const token_t FNW_TOKEN_ERR = 0xBB; // Something went wrong.
-
-/**
- * LED pulse configuration for component LEDs. Written once by main thread after
- * system startup, read many times by LED pulse thread.
- */
-extern PulseLEDs_t g_led_pulse_conf;
-
-/**
- * ID of LED pulse thread created during startup.
- */
-extern int32_t pulse_thread_id;
+const token_t FNW_TOKEN_HSH = 0xCC; // Handshake payload follows.
+const token_t FNW_TOKEN_VEC = 0xDD; // State vector payload follows.
 
 /******************************** PROTOTYPES **********************************/
+
+/**
+ * Controls the status LEDs on the flight computer board.
+ */
+class LEDController final
+{
+public:
+    /**
+     * Configures a new LED controller.
+     *
+     * @param   k_pins List of LED pin numbers. These will be set to OUTPUT
+     *                 mode, and stay solid by default.
+     */
+    LEDController(std::vector<uint8_t> k_pins);
+
+    /**
+     * Flips the behavior of an LED. If solid (by default), will begin to flash.
+     * If flashing, will stay solid.
+     *
+     * @param   k_pin Pin number to flip.
+     */
+    void flip(uint8_t k_pin);
+
+    /**
+     * Runs the controller by blinking LEDs as appropriate. Should be called
+     * at a relatively high frequency.
+     *
+     * @param   k_t Current time in seconds.
+     */
+    void run(float k_t);
+
+    /**
+     * Lowers all LEDs.
+     */
+    void lower_all();
+
+    /**
+     * Raises all LEDs.
+     */
+    void raise_all();
+
+private:
+    /**
+     * Number of state changes (either HIGH -> LOW or LOW -> HIGH) to make on
+     * a flashing LED per second.
+     */
+    static constexpr uint8_t PULSES = 3;
+
+    /**
+     * State of a single pin.
+     */
+    typedef struct Pin
+    {
+        uint8_t num;        // Pin number.
+        bool high;          // Whether or not LED is on.
+        bool flash;         // True if flashing, false if solid.
+        float t_flash_last; // Time of last flash. -1 if none.
+    } Pin_t;
+
+    /**
+     * Pin states, updated as the controller is run.
+     */
+    std::vector<Pin_t> m_pins;
+};
 
 /**
  * Raises a flight computer fault for a particular component.
@@ -207,8 +195,10 @@ extern int32_t pulse_thread_id;
  * @param   k_pin  Fault indicator LED pin.
  * @param   k_msg  Fault message, printed to DEBUG_SERIAL if defined.
  * @param   k_stat Global status for component to be set to Status_t::FAULT.
+ * @param   k_ledc LED controller.
  */
-void fault(uint8_t k_pin, const char* k_msg, Status_t& k_stat);
+void fault(uint8_t k_pin, const char* k_msg, Status_t& k_stat,
+           LEDController* k_ledc);
 
 /**
  * Gets the time according to Arduino's millis(), reinterpreted as seconds.
@@ -216,13 +206,5 @@ void fault(uint8_t k_pin, const char* k_msg, Status_t& k_stat);
  * @ret     Current system time in seconds.
  */
 double time_s();
-
-/**
- * Pulses LEDs to indicate system status. In general, the LEDs being pulsed will
- * correspond to system components which successfully initialized.
- *
- * @param   k_conf Pulse configuration.
- */
-void pulse_leds(const PulseLEDs_t k_conf);
 
 #endif
