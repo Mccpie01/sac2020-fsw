@@ -17,12 +17,11 @@ namespace std
 void fault(uint8_t k_pin, const char* k_msg, Status_t& k_stat,
            LEDController* k_ledc)
 {
-    digitalWrite(k_pin, HIGH);
 #ifdef DEBUG_SERIAL
     DEBUG_SERIAL.println(k_msg);
 #endif
     k_stat = Status_t::FAULT;
-    k_ledc->flip(k_pin);
+    k_ledc->flash(k_pin);
 }
 
 double time_s()
@@ -41,22 +40,40 @@ LEDController::LEDController(std::vector<uint8_t> k_pins)
     }
 }
 
-void LEDController::flip(uint8_t k_pin)
+void LEDController::flash(uint8_t k_pin)
 {
     for (Pin_t& pin : m_pins)
     {
         if (pin.num == k_pin)
         {
-            pin.flash = !pin.flash;
+            pin.flash = true;
             return;
         }
     }
 }
 
-void LEDController::run(float k_t)
+void LEDController::solid(uint8_t k_pin)
 {
     for (Pin_t& pin : m_pins)
     {
+        if (pin.num == k_pin)
+        {
+            pin.flash = false;
+            pin.high = true;
+            return;
+        }
+    }
+}
+
+void LEDController::run(float k_t, int32_t k_pin)
+{
+    for (Pin_t& pin : m_pins)
+    {
+        if (k_pin != -1 && pin.num != k_pin)
+        {
+            continue;
+        }
+
         if (pin.flash)
         {
             if (pin.t_flash_last == -1 ||
@@ -89,3 +106,24 @@ void LEDController::raise_all()
     }
 }
 #endif
+
+char* sanitize_ff_fmt(const char k_str[], uint32_t k_len)
+{
+    static char san[128];
+
+    uint32_t i_str = 0;
+    uint32_t i_san = 0;
+    while (i_str < k_len)
+    {
+        if (k_str[i_str] == '$' || k_str[i_str] == '#')
+        {
+            i_str += 2;
+            continue;
+        }
+        san[i_san] = k_str[i_str];
+        i_san++;
+        i_str++;
+    }
+
+    return san;
+}

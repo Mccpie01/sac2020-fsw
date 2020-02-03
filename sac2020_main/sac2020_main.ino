@@ -1,15 +1,14 @@
 /**
- *                    ---------- STATUS LEDS ----------
+ *             [ANOTHER FINE PRODUCT FROM THE NONSENSE FACTORY]
  *
- * Status LEDs light up on the board as each component is initialized. This
- * does not necessarily mean the initialization was successful. Only when ERR
- * lights up is setup complete, and the LEDs are indicative of anything.
+ * Flight software for the Longhorn Rocketry Association's Spaceport America
+ * Cup 2020 rocket. Built for the LRA Generation 2 flight computer.
  *
- * If an LED is solid, that component initialized successfully. If an LED is
- * flashing, that component failed. If an LED is not on whatsoever, something
- * has gone very, very wrong.
- *
- * On launch day, you're looking for all LEDs to be solid.
+ * @file      sac2020_main.ino
+ * @purpose   Arduino sketch for the main flight computer node, which manages
+ *            the rocket's state, navigation, and recovery.
+ * @author    Stefan deBruyn
+ * @updated   2/2/2020
  */
 
 #ifdef FF
@@ -44,9 +43,29 @@
 #else
     #define TELEM(data, ...)                                                   \
     {                                                                          \
-        DEBUG_SERIAL.printf(data "\n", ##__VA_ARGS__);                         \
+        const char data_raw[] = data;                                          \
+        char* data_san = sanitize_ff_fmt(data_raw, sizeof(data_raw));          \
+        DEBUG_SERIAL.printf(data_san, ##__VA_ARGS__);                          \
+        DEBUG_SERIAL.printf("\n");                                             \
     }
 #endif
+
+/**
+ * Flashes the LED controller some number of times to indicate something to
+ * the flight computer operator.
+ *
+ * @param   k Number of times to flash.
+ */
+#define EVENT_FLASH(k)                                                         \
+{                                                                              \
+    for (uint32_t i = 0; i < k; i++)                                           \
+    {                                                                          \
+        g_ledc->raise_all();                                                   \
+        delay(125);                                                            \
+        g_ledc->lower_all();                                                   \
+        delay(125);                                                            \
+    }                                                                          \
+}
 
 /******************************** CONFIGURATION ********************************/
 
@@ -169,6 +188,7 @@ photic::Barometer* g_baro;
  */
 Status_t g_baro_status  = Status_t::OFFLINE; // BMP085 barometer.
 Status_t g_imu_status   = Status_t::OFFLINE; // BNO055 IMU.
+Status_t g_ble_status   = Status_t::OFFLINE; // Bluetooth module.
 Status_t g_pyro1_status = Status_t::OFFLINE; // Pyro 1.
 Status_t g_pyro2_status = Status_t::OFFLINE; // Pyro 2.
 Status_t g_fnw_status   = Status_t::OFFLINE; // Flight computer network.
@@ -241,6 +261,7 @@ LEDController* g_ledc = nullptr;
  */
 void init_baro()
 {
+    // Create barometer device wrapper based on runtime environment.
     g_baro =
     #ifdef FF
         new VirtualBarometer();
@@ -248,8 +269,8 @@ void init_baro()
         new Sac2020Barometer();
     #endif
 
+    // Attempt contact with barometer. Abort on failure.
     TELEM("Contacting barometer...");
-
     if (!g_baro->init())
     {
         fault(PIN_LED_BARO_FAULT, "ERROR :: BMP085 INIT FAILED", g_baro_status,
@@ -257,7 +278,12 @@ void init_baro()
         return;
     }
 
+    // Signal operator sampling is about to start.
+    EVENT_FLASH(8);
     TELEM("Sampling launchpad altitude...");
+
+    // Barometer status LED flashes during sampling.
+    g_ledc->flash(PIN_LED_BARO_FAULT);
 
     // Estimate initial altitude via barometer. Measure variance in altitude
     // readings for computing a Kalman gain.
@@ -266,14 +292,21 @@ void init_baro()
     {
         g_baro->update();
         alts.add(g_baro->data().altitude);
+        g_ledc->run(time_s(), PIN_LED_BARO_FAULT);
     }
+
+    // Compute variance and set launchpad altitude.
     g_pos_variance = alts.stdev() * alts.stdev();
     SV_ALTITUDE = alts.mean();
     g_x0 = SV_ALTITUDE;
 
+    // Bring up barometer LED again and reset all LEDs.
+    g_ledc->solid(PIN_LED_BARO_FAULT);
+    g_ledc->lower_all();
+
+    // Barometer is good to go.
     TELEM("Launchpad altitude set to $y%.2f#r m", SV_ALTITUDE);
     TELEM("Sampled altimeter variance: $y%.4f", g_pos_variance);
-
     g_baro_status = Status_t::ONLINE;
 }
 
@@ -282,6 +315,7 @@ void init_baro()
  */
 void init_imu()
 {
+    // Create IMU device wrapper based on runtime environment.
     g_imu =
     #ifdef FF
         new VirtualImu();
@@ -289,8 +323,8 @@ void init_imu()
         new Sac2020Imu();
     #endif
 
+    // Attempt contact with IMU. Abort on failure.
     TELEM("Contacting IMU...");
-
     if (!g_imu->init())
     {
         fault(PIN_LED_IMU_FAULT, "ERROR :: BNO055 INIT FAILED", g_imu_status,
@@ -298,7 +332,81 @@ void init_imu()
         return;
     }
 
+#ifndef FF
+    // Perform IMU sensor calibration.
+    TELEM("Beginning IMU calibration...");
+
+    // Last status read for each sensor.
+    uint8_t system_status = 0;
+    uint8_t gyro_status   = 0;
+    uint8_t accel_status  = 0;
+    uint8_t mag_status    = 0;
+
+    // Whether or not each sensor is fully calibrated.
+    bool system_calib = false;
+    bool gyro_calib   = false;
+    bool accel_calib  = false;
+    bool mag_calib    = false;
+
+    // Status returned by BNO055 when component is fully calibrated.
+    static const uint8_t FULL_CALIB_STATUS = 3;
+
+    // Pins used to convey calibration events.
+    const std::vector<uint8_t> calib_pins =
+    {
+        PIN_LED_PYRO1_FAULT, // IMU system.
+        PIN_LED_PYRO2_FAULT, // Gyroscope.
+        PIN_LED_BLE_FAULT,   // Accelerometer.
+        PIN_LED_FNW_FAULT    // Magnetometer.
+    };
+
+    // While calibration is not complete...
+    do
+    {
+        // Get calibration statuses.
+        Sac2020Imu* imu_cast = (Sac2020Imu*) g_imu;
+        imu_cast->get_calib(&system_status, &gyro_status, &accel_status,
+                            &mag_status);
+        // Mark system as calibrated if not.
+        if (system_status == FULL_CALIB_STATUS && !system_calib)
+        {
+            TELEM("IMU system calibrated");
+            digitalWrite(calib_pins[0], HIGH);
+            system_calib = true;
+        }
+        // Mark gyroscope as calibrated if not.
+        if (gyro_status == FULL_CALIB_STATUS && !gyro_calib)
+        {
+            TELEM("IMU gyroscope calibrated");
+            digitalWrite(calib_pins[1], HIGH);
+            gyro_calib = true;
+        }
+        // Mark accelerometer as calibrated if not.
+        if (accel_status == FULL_CALIB_STATUS && !accel_calib)
+        {
+            TELEM("IMU accelerometer calibrated");
+            digitalWrite(calib_pins[2], HIGH);
+            accel_calib = true;
+        }
+        // Mark magnetometer as calibrated if not.
+        if (mag_status == FULL_CALIB_STATUS && !mag_calib)
+        {
+            TELEM("IMU magnetometer calibrated");
+            digitalWrite(calib_pins[3], HIGH);
+            mag_calib = true;
+        }
+    } while (!system_calib || !gyro_calib || !accel_calib || !mag_calib);
+
+    // Signal to operator that calibration is complete and give them a moment
+    // to set the computer down before variance sampling starts.
+    EVENT_FLASH(8);
+    TELEM("IMU calibration complete. Variance profile will begin shortly...");
+    delay(5000);
+#endif
+
+    // Flash IMU LED during sampling.
     TELEM("Sampling accelerometer variance...");
+    g_ledc->flash(PIN_LED_IMU_FAULT);
 
     // Measure variance in acceleration readings for later computing a Kalman
     // gain. This is the variance in a single axis, as only a (scalar) component
@@ -311,11 +419,16 @@ void init_imu()
         // approximate direction of travel and should represent the most
         // significant component of net acceleration.
         accs.add(g_imu->data().accel_z);
+        g_ledc->run(time_s(), PIN_LED_IMU_FAULT);
     }
     g_acc_variance = accs.stdev() * accs.stdev();
 
-    TELEM("Sampled accelerometer variance: $y%.4f", g_acc_variance);
+    // Bring IMU LED back up and reset all LEDs.
+    g_ledc->solid(PIN_LED_IMU_FAULT);
+    g_ledc->lower_all();
 
+    // IMU is good to go.
+    TELEM("Sampled accelerometer variance: $y%.4f", g_acc_variance);
     g_imu_status = Status_t::ONLINE;
 }
 
@@ -331,11 +444,13 @@ void init_servos()
 }
 
 /**
- * Performs pyro continuity checks.
+ * Performs pyro continuity checks. TODO
  */
-void check_pyros()
+void init_pyros()
 {
-
+    g_ledc->flash(PIN_LED_BLE_FAULT);
+    g_ledc->flash(PIN_LED_PYRO1_FAULT);
+    g_ledc->flash(PIN_LED_PYRO2_FAULT);
 }
 
 /**
@@ -343,9 +458,11 @@ void check_pyros()
  */
 void update_sensors()
 {
+    // Run device wrappers.
     g_imu->update();
     g_baro->update();
 
+    // Dump sensor readings into state vector.
     SV_PRESSURE = g_baro->data().pressure;
     SV_TEMPERATURE = g_baro->data().temperature;
     SV_BARO_ALT = g_baro->data().altitude;
@@ -417,12 +534,10 @@ inline float accel_magnitude()
 
 void setup()
 {
-#ifdef DEBUG_SERIAL
+    // In case we are debugging over serial, give operator a moment to open
+    // serial monitor.
     DEBUG_SERIAL.begin(115200);
-    while (!DEBUG_SERIAL);
-#endif
-
-    TELEM("Vehicle is in startup...");
+    delay(3000);
 
     // Zero the state vector.
     memset(&g_statevec, 0, sizeof(MainStateVector_t));
@@ -431,10 +546,15 @@ void setup()
     // Set up status LED controller.
     g_ledc = new LEDController({PIN_LED_SYS_FAULT,
                                 PIN_LED_IMU_FAULT,
+                                PIN_LED_BLE_FAULT,
                                 PIN_LED_PYRO1_FAULT,
                                 PIN_LED_PYRO2_FAULT,
                                 PIN_LED_FNW_FAULT,
                                 PIN_LED_BARO_FAULT});
+
+    // Signal to operator that computer is in startup.
+    TELEM("Vehicle is in startup...");
+    EVENT_FLASH(8);
 
 #ifdef USING_FNW
     TELEM("Contacting aux node...");
@@ -487,10 +607,10 @@ void setup()
 #endif
 
     // Initialize subsystems.
-    init_baro();
     init_imu();
+    init_baro();
     init_servos();
-    check_pyros();
+    init_pyros();
 
     // Set up Kalman filter.
     g_kf.set_delta_t(g_mtr_kf.period());
@@ -503,8 +623,15 @@ void setup()
               g_imu_status   == Status_t::ONLINE &&
               g_pyro1_status == Status_t::ONLINE &&
               g_pyro2_status == Status_t::ONLINE;
+    if (!ok)
+    {
+        g_ledc->flash(PIN_LED_SYS_FAULT);
+    }
 
     TELEM("Setup complete. Awaiting liftoff...");
+
+    // Raise all LEDs to flip internal flags in controller.
+    g_ledc->raise_all();
 
 #ifdef FF
     // If using FF, open telemetry pipes.

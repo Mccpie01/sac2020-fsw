@@ -1,3 +1,15 @@
+/**
+ *             [ANOTHER FINE PRODUCT FROM THE NONSENSE FACTORY]
+ *
+ * Flight software for the Longhorn Rocketry Association's Spaceport America
+ * Cup 2020 rocket. Built for the LRA Generation 2 flight computer.
+ *
+ * @file      sac2020_main_pins.h
+ * @purpose   Pinouts for the main flight computer node.
+ * @author    Stefan deBruyn
+ * @updated   2/2/2020
+ */
+
 #ifndef SAC2020_MAIN_PINS_H
 #define SAC2020_MAIN_PINS_H
 
@@ -19,16 +31,20 @@
  */
 #define PIN_LED_SYS_FAULT   9
 #define PIN_LED_IMU_FAULT   10
-#define PIN_LED_PYRO1_FAULT 12
-#define PIN_LED_PYRO2_FAULT 17
+#define PIN_LED_BLE_FAULT   13
+#define PIN_LED_PYRO2_FAULT 12
+#define PIN_LED_PYRO1_FAULT 17
 #define PIN_LED_FNW_FAULT   20
 #define PIN_LED_BARO_FAULT  21
 
 /**
  * Recovery pyros.
  */
-#define PIN_PYRO1 7
-#define PIN_PYRO2 8
+#define PIN_PIN_RTS 6
+#define PIN_BLE_CTS 13
+#define PIN_BLE_MOD 22
+#define PIN_BLE_DFU 23
+#define BLE_SERIAL  Serial3
 
 /**
  * Continuity checking.

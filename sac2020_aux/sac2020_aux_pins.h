@@ -1,3 +1,15 @@
+/**
+ *             [ANOTHER FINE PRODUCT FROM THE NONSENSE FACTORY]
+ *
+ * Flight software for the Longhorn Rocketry Association's Spaceport America
+ * Cup 2020 rocket. Built for the LRA Generation 2 flight computer.
+ *
+ * @file      sac2020_main_pins.h
+ * @purpose   Pinouts for the auxiliary flight computer node.
+ * @author    Stefan deBruyn
+ * @updated   2/2/2020
+ */
+
 #ifndef SAC2020_AUX_PINS_H
 #define SAC2020_AUX_PINS_H
 

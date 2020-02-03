@@ -1,3 +1,16 @@
+/**
+ *             [ANOTHER FINE PRODUCT FROM THE NONSENSE FACTORY]
+ *
+ * Flight software for the Longhorn Rocketry Association's Spaceport America
+ * Cup 2020 rocket. Built for the LRA Generation 2 flight computer.
+ *
+ * @file      sac2020_lib.h
+ * @purpose   Supporting code that is common to both main and auxiliary flight
+ *            computer nodes.
+ * @author    Stefan deBruyn
+ * @updated   2/2/2020
+ */
+
 #ifndef SAC2020_LIB_H
 #define SAC2020_LIB_H
 
@@ -140,20 +153,27 @@ public:
     LEDController(std::vector<uint8_t> k_pins);
 
     /**
-     * Flips the behavior of an LED. If solid (by default), will begin to flash.
-     * If flashing, will stay solid.
+     * Makes a pin flash while the controller is run.
      *
-     * @param   k_pin Pin number to flip.
+     * @param   k_pin Pin number.
      */
-    void flip(uint8_t k_pin);
+    void flash(uint8_t k_pin);
+
+    /**
+     * Makes a pin solid while the controller is run.
+     *
+     * @param   k_pin Pin number.
+     */
+    void solid(uint8_t k_pin);
 
     /**
      * Runs the controller by blinking LEDs as appropriate. Should be called
      * at a relatively high frequency.
      *
-     * @param   k_t Current time in seconds.
+     * @param   k_t   Current time in seconds.
+     * @param   k_pin Pin to run. If -1, all pins run.
      */
-    void run(float k_t);
+    void run(float k_t, int32_t k_pin=-1);
 
     /**
      * Lowers all LEDs.
@@ -206,5 +226,17 @@ void fault(uint8_t k_pin, const char* k_msg, Status_t& k_stat,
  * @ret     Current system time in seconds.
  */
 double time_s();
+
+/**
+ * Sanitizes a string literal with FF format codes in it. Operates on the same
+ * pointer and so destroys the results of previous calls. Supports a maximum
+ * string size of 128 characters (including null terminator).
+ *
+ * @param   k_str String to sanitize.
+ * @param   k_len String length.
+ *
+ * @ret     Sanitized string.
+ */
+char* sanitize_ff_fmt(const char k_str[], uint32_t k_len);
 
 #endif

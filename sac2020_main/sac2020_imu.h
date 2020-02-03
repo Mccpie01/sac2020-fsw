@@ -1,3 +1,16 @@
+/**
+ *             [ANOTHER FINE PRODUCT FROM THE NONSENSE FACTORY]
+ *
+ * Flight software for the Longhorn Rocketry Association's Spaceport America
+ * Cup 2020 rocket. Built for the LRA Generation 2 flight computer.
+ *
+ * @file      sac2020_imu.h
+ * @purpose   Device wrapper for the flight computer's inertial measurement
+ *            unit.
+ * @author    Stefan deBruyn
+ * @updated   2/2/2020
+ */
+
 #ifndef SAC2020_IMU_H
 #define SAC2020_IMU_H
 
@@ -67,6 +80,20 @@ public:
     imu::Quaternion quat()
     {
         return m_quat;
+    }
+
+    /**
+     * Gets the calibration level of IMU components.
+     *
+     * @param   k_sys   System.
+     * @param   k_gyro  Gyroscope.
+     * @param   k_accel Accelerometer.
+     * @param   k_mag   Magnetometer.
+     */
+    void get_calib(uint8_t* k_sys, uint8_t* k_gyro, uint8_t* k_accel,
+                   uint8_t* k_mag)
+    {
+        m_bno055.getCalibration(k_sys, k_gyro, k_accel, k_mag);
     }
 
 private:

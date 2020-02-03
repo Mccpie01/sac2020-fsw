@@ -1,3 +1,16 @@
+/**
+ *             [ANOTHER FINE PRODUCT FROM THE NONSENSE FACTORY]
+ *
+ * Flight software for the Longhorn Rocketry Association's Spaceport America
+ * Cup 2020 rocket. Built for the LRA Generation 2 flight computer.
+ *
+ * @file      sac2020_aux.ino
+ * @purpose   Arduino sketch for the auxiliary flight computer node, which
+ *            manages the rocket's telemetry and ground communications.
+ * @author    Stefan deBruyn
+ * @updated   2/2/2020
+ */
+
 #include <Adafruit_GPS.h>
 #include <RH_RF95.h>
 #include <SD.h>
@@ -42,6 +55,11 @@ bool g_liftoff = false;
  * Whether or not FNW indicator LED is lit.
  */
 bool g_telemtx_led = false;
+
+/**
+ * Whether or not I have handshook with main.
+ */
+bool g_handshake = false;
 
 /**
  * Controller for status LEDs.
@@ -155,10 +173,8 @@ void init_rfm()
 
 void setup()
 {
-#ifdef DEBUG_SERIAL
     DEBUG_SERIAL.begin(115200);
-    while (!DEBUG_SERIAL);
-#endif
+    delay(3000);
 
     FNW_SERIAL.begin(FNW_BAUD);
 
@@ -167,6 +183,7 @@ void setup()
                                 PIN_LED_RFM_FAULT,
                                 PIN_LED_GPS_FAULT,
                                 PIN_LED_FNW_FAULT});
+    g_ledc->flash(PIN_LED_FNW_FAULT);
 
     // Initialize subsystems.
     init_sd();
@@ -206,6 +223,11 @@ void loop()
         if (packet[0] == FNW_TOKEN_HSH)
         {
             FNW_SERIAL.write(packet, FNW_PACKET_SIZE);
+            if (!g_handshake)
+            {
+                g_handshake = true;
+                g_ledc->solid(PIN_LED_FNW_FAULT);
+            }
             return;
         }
 
