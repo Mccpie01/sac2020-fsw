@@ -8,7 +8,7 @@
  * @purpose   Arduino sketch for the main flight computer node, which manages
  *            the rocket's state, navigation, and recovery.
  * @author    Stefan deBruyn
- * @updated   2/2/2020
+ * @updated   2/3/2020
  */
 
 #ifdef FF
@@ -25,9 +25,10 @@
 
 #include <math.h>
 #include <photic.h>
+#include <sac2020_lib.h>
 
 #include "sac2020_main_pins.h"
-#include "sac2020_lib.h"
+#include "sac2020_profile.h"
 
 /**
  * Telemetry output. This output goes to the terminal in FF (and supports FF
@@ -73,6 +74,7 @@
  * Depth of Kalman gain calculation.
  */
 #define KGAIN_CALC_DEPTH 50
+
 /**
  * Number of seconds that must elapse before detecting liftoff via
  * accelerometer.
@@ -86,64 +88,17 @@
 #else
     #define NO_LIFTOFF_GRACE_PERIOD_S 0
 #endif
-/**
- * Minimum acceleration rolling average required to declare liftoff and enter
- * powered flight state.
- */
-#ifdef GROUND_TEST
-    #define LIFTOFF_ACCEL_TRIGGER_MPSSQ 1
-#else
-    #define LIFTOFF_ACCEL_TRIGGER_MPSSQ 3 * photic::EARTH_SLGRAV_MPSSQ
-#endif
+
 /**
  * Number of pressure readings taken on startup to estimate launchpad altitude.
  */
 #define LAUNCHPAD_ALTITUDE_EST_READINGS 1000
-/**
- * Altitude relative to launchpad at which to deploy canards. TODO
- */
-#define CANARD_DEPLOYMENT_ALTITUDE_M 500
-/**
- * Altitude relative to launchpad at which to deploy main parachute.
- */
-#define MAIN_DEPLOYMENT_ALTITUDE_M 457.2
+
 /**
  * The index of imu::Vector<3> corresponding to the vertical direction. In the
  * case of a BNO055 IMU calibrated flat on a table, this is the positive z axis.
  */
 #define VERTICAL_AXIS_VECTOR_IDX 2
-
-/**
- * The following values define the time windows around detection of each flight
- * event. The event may not be detected by sensor readings before the low bound
- * of the window. The event will automatically trigger after the high bound,
- * regardless of sensor readings. All values are in seconds since liftoff.
- */
-
-/**
- * Motor burnout detection window.
- */
-#define EVENT_BURNOUT_T_LOW_S  5
-#define EVENT_BURNOUT_T_HIGH_S 8
-/**
- * Canard deployment detection window.
- */
-#define EVENT_CANARDS_T_LOW_S  14
-#define EVENT_CANARDS_T_HIGH_S 20
-/**
- * Apogee/drogue deployment detection window.
- */
-#define EVENT_APOGEE_T_LOW_S   35
-#define EVENT_APOGEE_T_HIGH_S  45
-/**
- * Main deployment detection window.
- */
-#define EVENT_MAIN_T_LOW_S     220
-#define EVENT_MAIN_T_HIGH_S    260
-/**
- * Mission conclusion detection window.
- */
-#define EVENT_CONCLUDE_T_HIGH_S  360
 
 /********************************* STATE MACROS *******************************/
 
@@ -169,6 +124,7 @@
 #define SV_GYRO_R      g_statevec.gyro_r
 #define SV_GYRO_P      g_statevec.gyro_p
 #define SV_GYRO_Y      g_statevec.gyro_y
+#define SV_IMU_TEMP    g_statevec.imu_temp
 #define SV_STATE       g_statevec.state
 
 /*********************************** GLOBALS **********************************/
@@ -472,6 +428,10 @@ void update_sensors()
     SV_GYRO_R = g_imu->data().gyro_r;
     SV_GYRO_P = g_imu->data().gyro_p;
     SV_GYRO_Y = g_imu->data().gyro_y;
+
+    // Read IMU temperature.
+    Sac2020Imu* imu_cast = (Sac2020Imu*) g_imu;
+    SV_IMU_TEMP = imu_cast->get_temp();
 
 #ifndef FF
     // Determine vertical component of acceleration relative to launchpad

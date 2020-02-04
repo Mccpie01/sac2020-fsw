@@ -42,8 +42,8 @@ int main(int ac, char** av)
                vec.altitude, vec.velocity, vec.acceleration);
 
         // Sensor readings.
-        printf("q=%09.2f t=%09.2f balt=%09.2f   ",
-               vec.pressure, vec.temperature, vec.baro_altitude);
+        printf("q=%09.2f c=%09.2f balt=%09.2f cimu=%09.2f   ",
+               vec.pressure, vec.temperature, vec.baro_altitude, vec.imu_temp);
         printf("accx=%09.2f accy=%09.2f accz=%09.2f accv=%09.2f   ",
                vec.accel_x, vec.accel_y, vec.accel_z, vec.accel_vertical);
         printf("r=%09.2f p=%09.2f y=%09.2f",

@@ -8,7 +8,7 @@
  * @purpose   Device wrapper for the flight computer's inertial measurement
  *            unit.
  * @author    Stefan deBruyn
- * @updated   2/2/2020
+ * @updated   2/3/2020
  */
 
 #ifndef SAC2020_IMU_H
@@ -94,6 +94,16 @@ public:
                    uint8_t* k_mag)
     {
         m_bno055.getCalibration(k_sys, k_gyro, k_accel, k_mag);
+    }
+
+    /**
+     * Gets the current temperature read by the IMU.
+     *
+     * @ret     Temperature in C.
+     */
+    int8_t get_temp()
+    {
+        return m_bno055.getTemp();
     }
 
 private:

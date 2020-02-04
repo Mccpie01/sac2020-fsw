@@ -7,7 +7,7 @@
  * @file      sac2020_state.h
  * @purpose   Flight computer state representation objects.
  * @author    Stefan deBruyn
- * @updated   2/2/2020
+ * @updated   2/3/2020
  */
 
 #ifndef SAC2020_STATE_H
@@ -66,6 +66,9 @@ typedef struct MainStateVector
 
     // Current state of the flight computer.
     VehicleState_t state;
+
+    // Temperature read by IMU. Placed here to minimize padding.
+    int8_t imu_temp;
 
 } MainStateVector_t;
 

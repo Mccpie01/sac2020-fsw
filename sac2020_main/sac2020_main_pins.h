@@ -7,7 +7,7 @@
  * @file      sac2020_main_pins.h
  * @purpose   Pinouts for the main flight computer node.
  * @author    Stefan deBruyn
- * @updated   2/2/2020
+ * @updated   2/3/2020
  */
 
 #ifndef SAC2020_MAIN_PINS_H
@@ -38,7 +38,7 @@
 #define PIN_LED_BARO_FAULT  21
 
 /**
- * Recovery pyros.
+ * Bluetooth module.
  */
 #define PIN_PIN_RTS 6
 #define PIN_BLE_CTS 13

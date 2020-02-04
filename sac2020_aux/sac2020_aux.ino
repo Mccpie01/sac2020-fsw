@@ -8,7 +8,7 @@
  * @purpose   Arduino sketch for the auxiliary flight computer node, which
  *            manages the rocket's telemetry and ground communications.
  * @author    Stefan deBruyn
- * @updated   2/2/2020
+ * @updated   2/3/2020
  */
 
 #include <Adafruit_GPS.h>
@@ -28,6 +28,10 @@
  * Name of telemetry heap file on SD card.
  */
 #define TELEM_FNAME "TELEM.DAT"
+/**
+ * Name of GPS data file on SD card.
+ */
+#define NMEA_FNAME "NMEA.DAT"
 
 /*********************************** GLOBALS **********************************/
 
@@ -261,6 +265,24 @@ void loop()
         // Transmit to ground station via RF module.
         // g_rfm.send((uint8_t) (&vec), sizeof(vec));
         // g_rfm.waitPacketSent();
+    }
+
+    // Check for new NMEA sentence from GPS.
+    if (g_gps.newNMEAreceived())
+    {
+        // Read new sentence.
+        char* nmea = g_gps.lastNMEA();
+
+        // Compute sentence length in a memory-safe way.
+        // Note: 120 is max sentence length according to GPS library.
+        uint32_t len = 0;
+        for (; len < 120 && nmea[len] != 0; len++);
+
+        // Write to SD card.
+        File out = SD.open(NMEA_FNAME, FILE_WRITE);
+        out.write(nmea, len);
+        out.write("\n", 1);
+        out.close();
     }
 #endif
 }
