@@ -8,7 +8,7 @@
  * @purpose   Arduino sketch for the main flight computer node, which manages
  *            the rocket's state, navigation, and recovery.
  * @author    Stefan deBruyn
- * @updated   2/22/2020
+ * @updated   2/23/2020
  */
 
 #ifdef FF
@@ -202,11 +202,6 @@ photic::Metronome g_mtr_apdet(10);
  * vehicle, i.e. if it's in powered flight, falling, etc.
  */
 MainStateVector_t g_statevec;
-/**
- * Metronome controlling the frequency at which state vectors are sent to
- * the aux computer for SD backup and transmission to ground.
- */
-photic::Metronome g_mtr_telemtx(4);
 
 /**
  * Controller for status LEDs.
@@ -217,6 +212,12 @@ LEDController* g_ledc = nullptr;
  * Whether or not the BLE is currently being used.
  */
 bool g_ble_active = false;
+
+/**
+ * Whether or not I am waiting for an ack from the aux computer before sending
+ * another telemetry packet.
+ */
+bool g_aux_ack_pending = false;
 
 /********************************* FUNCTIONS **********************************/
 
@@ -877,23 +878,45 @@ void loop()
     // and transmission to ground station. This runs in every state except
     // pre-liftoff.
     bool do_telemtx = SV_STATE != VehicleState_t::PRELTOFF;
-    if (do_telemtx && g_mtr_telemtx.poll(SV_TIME))
+    if (do_telemtx)
     {
     #ifdef USING_FNW
-        // Pack metadata token and state vector into a buffer and send to aux.
-        uint8_t packet[FNW_PACKET_SIZE];
-        packet[0] = FNW_TOKEN_VEC;
-        memcpy(packet + 1, &g_statevec, sizeof(g_statevec));
-        // Transmit state vector.
-        FNW_SERIAL.write(packet, FNW_PACKET_SIZE);
-    #endif
-
-        // If the mission is over, this telemetry transmission becomes the last
-        // action the main computer performs before ceasing to loop.
-        if (SV_STATE == VehicleState_t::CONCLUDE)
+        // OK to send another packet.
+        if (!g_aux_ack_pending)
         {
-            g_sent_conclude_msg = true;
-            return;
+            // Pack metadata token and state vector into a buffer and send to
+            // aux.
+            uint8_t packet[FNW_PACKET_SIZE];
+            packet[0] = FNW_TOKEN_VEC;
+            memcpy(packet + 1, &g_statevec, sizeof(g_statevec));
+            // Transmit state vector.
+            FNW_SERIAL.write(packet, FNW_PACKET_SIZE);
+
+            // If the mission is over, this telemetry transmission becomes the
+            // last action the main computer performs before ceasing to loop.
+            if (SV_STATE == VehicleState_t::CONCLUDE)
+            {
+                g_sent_conclude_msg = true;
+                return;
+            }
+
+            // Block further packet TXs until aux confirms receipt.
+            g_aux_ack_pending = true;
         }
+        // Waiting for confirmation of last packet receipt--check for ack.
+        else
+        {
+            // If a packet is available, it's probably the ack. Currently, the
+            // ack is just an echo because aux has no information that main
+            // could possibly want. For the fastest exchange possible, just
+            // empty the RX buffer w/o checking the contents.
+            if (FNW_PACKET_AVAILABLE)
+            {
+                uint8_t packet[FNW_PACKET_SIZE];
+                FNW_SERIAL.readBytes(packet, FNW_PACKET_SIZE);
+                g_aux_ack_pending = false;
+            }
+        }
+    #endif
     }
 }

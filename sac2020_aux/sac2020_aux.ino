@@ -8,7 +8,7 @@
  * @purpose   Arduino sketch for the auxiliary flight computer node, which
  *            manages the rocket's telemetry and ground communications.
  * @author    Stefan deBruyn
- * @updated   2/3/2020
+ * @updated   2/23/2020
  */
 
 #include <Adafruit_GPS.h>
@@ -261,6 +261,9 @@ void loop()
             g_telemtx_led = !g_telemtx_led;
             digitalWrite(PIN_LED_FNW_FAULT, g_telemtx_led ? HIGH : LOW);
         }
+
+        // Echo packet back to tell main we have removed it from our RX buffer.
+        FNW_SERIAL.write(packet, FNW_PACKET_SIZE);
 
         // Transmit to ground station via RF module.
         // g_rfm.send((uint8_t) (&vec), sizeof(vec));
