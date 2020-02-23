@@ -20,6 +20,9 @@ void fault(uint8_t k_pin, const char* k_msg, Status_t& k_stat,
 #ifdef DEBUG_SERIAL
     DEBUG_SERIAL.println(k_msg);
 #endif
+#ifdef BLE_SERIAL
+    BLE_SERIAL.println(k_msg);
+#endif
     k_stat = Status_t::FAULT;
     k_ledc->flash(k_pin);
 }

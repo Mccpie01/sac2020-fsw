@@ -8,7 +8,7 @@
  * @purpose   Device wrapper for the flight computer's inertial measurement
  *            unit.
  * @author    Stefan deBruyn
- * @updated   2/3/2020
+ * @updated   2/22/2020
  */
 
 #ifndef SAC2020_IMU_H
@@ -55,9 +55,9 @@ public:
 
         // Populate orientation data. Currently this maps x, y, z to roll,
         // pitch, yaw, but I have no idea if this is correct.
-        m_data.gyro_r = orient.orientation.x;
-        m_data.gyro_p = orient.orientation.y;
-        m_data.gyro_y = orient.orientation.z;
+        m_data.gyro_x = orient.orientation.x;
+        m_data.gyro_y = orient.orientation.y;
+        m_data.gyro_z = orient.orientation.z;
 
         // Populate acceleration data.
         m_data.accel_x = accel.acceleration.x;

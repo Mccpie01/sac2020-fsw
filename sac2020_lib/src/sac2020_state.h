@@ -60,9 +60,9 @@ typedef struct MainStateVector
     float accel_x;
     float accel_y;
     float accel_z;
-    float gyro_r;
-    float gyro_p;
+    float gyro_x;
     float gyro_y;
+    float gyro_z;
 
     // Current state of the flight computer.
     VehicleState_t state;

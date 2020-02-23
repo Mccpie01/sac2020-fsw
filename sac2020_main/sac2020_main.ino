@@ -8,7 +8,7 @@
  * @purpose   Arduino sketch for the main flight computer node, which manages
  *            the rocket's state, navigation, and recovery.
  * @author    Stefan deBruyn
- * @updated   2/3/2020
+ * @updated   2/22/2020
  */
 
 #ifdef FF
@@ -19,6 +19,8 @@
     #include <Servo.h>
     #include <Wire.h>
 
+    #include "Adafruit_BLE.h"
+    #include "Adafruit_BluefruitLE_UART.h"
     #include "sac2020_baro.h"
     #include "sac2020_imu.h"
 #endif
@@ -48,6 +50,11 @@
         char* data_san = sanitize_ff_fmt(data_raw, sizeof(data_raw));          \
         DEBUG_SERIAL.printf(data_san, ##__VA_ARGS__);                          \
         DEBUG_SERIAL.printf("\n");                                             \
+        if (g_ble_active)                                                      \
+        {                                                                      \
+            BLE_SERIAL.printf(data_san, ##__VA_ARGS__);                        \
+            BLE_SERIAL.printf("\n");                                           \
+        }                                                                      \
     }
 #endif
 
@@ -78,16 +85,10 @@
 /**
  * Number of seconds that must elapse before detecting liftoff via
  * accelerometer.
+ *
+ * Note: this is always 0 since the grace period was made Bluetooth-commanded.
  */
-#ifndef FF
-    #ifdef GROUND_TEST
-        #define NO_LIFTOFF_GRACE_PERIOD_S 0
-    #else
-        #define NO_LIFTOFF_GRACE_PERIOD_S 10 * 60
-    #endif
-#else
-    #define NO_LIFTOFF_GRACE_PERIOD_S 0
-#endif
+#define NO_LIFTOFF_GRACE_PERIOD_S 0
 
 /**
  * Number of pressure readings taken on startup to estimate launchpad altitude.
@@ -121,9 +122,9 @@
 #define SV_ACCEL_X     g_statevec.accel_x
 #define SV_ACCEL_Y     g_statevec.accel_y
 #define SV_ACCEL_Z     g_statevec.accel_z
-#define SV_GYRO_R      g_statevec.gyro_r
-#define SV_GYRO_P      g_statevec.gyro_p
+#define SV_GYRO_X      g_statevec.gyro_x
 #define SV_GYRO_Y      g_statevec.gyro_y
+#define SV_GYRO_Z      g_statevec.gyro_z
 #define SV_IMU_TEMP    g_statevec.imu_temp
 #define SV_STATE       g_statevec.state
 
@@ -137,6 +138,8 @@ photic::Barometer* g_baro;
 #ifndef FF
     Servo g_servo1;
     Servo g_servo2;
+    Adafruit_BluefruitLE_UART g_ble(Serial3, PIN_BLE_MOD, PIN_BLE_CTS,
+                                    PIN_BLE_RTS);
 #endif
 
 /**
@@ -210,7 +213,46 @@ photic::Metronome g_mtr_telemtx(4);
  */
 LEDController* g_ledc = nullptr;
 
+/**
+ * Whether or not the BLE is currently being used.
+ */
+bool g_ble_active = false;
+
 /********************************* FUNCTIONS **********************************/
+
+/**
+ * Receives a string of some expected size from the BLE.
+ *
+ * Note: BLE recv buffer is flushed after receipt.
+ *
+ * @param   k_exp Expected string.
+ * @param   k_len Method will block until this many bytes are received.
+ *                Should probably be the length of k_exp.
+ *
+ * @ret     Whether or not the received string matched the expected.
+ */
+bool ble_recv(const char k_exp[], size_t k_len)
+{
+    size_t recv_len = 0;
+    char recv_buf[k_len];
+    memset(recv_buf, 0, k_len);
+
+    // Read in data until the expected amount is received.
+    while (recv_len < k_len)
+    {
+        g_ledc->run(time_s());
+        if (g_ble.available())
+        {
+            recv_buf[recv_len++] = (char) g_ble.read();
+        }
+    }
+
+    delay(100);
+    g_ble.flush();
+
+    // Return if the data matched the expected.
+    return memcmp(recv_buf, k_exp, k_len) == 0;
+}
 
 /**
  * Initializes the BMP085 barometer.
@@ -400,11 +442,40 @@ void init_servos()
 }
 
 /**
- * Performs pyro continuity checks. TODO
+ * Initializes the Bluetooth module.
+ */
+void init_ble()
+{
+    g_ble_active = true;
+
+    // Attempt contact with BLE. Abort on failure.
+    if (!g_ble.begin(false, false))
+    {
+        fault(PIN_LED_BLE_FAULT, "ERROR :: BLUETOOTH INIT FAILED", g_ble_status,
+              g_ledc);
+        return;
+    }
+    g_ble.setMode(BLUEFRUIT_MODE_DATA);
+
+    // Wait for startup command.
+    static const char CMD_STARTUP[] = "go\n";
+    if (!ble_recv(CMD_STARTUP, sizeof(CMD_STARTUP) - 1))
+    {
+        fault(PIN_LED_BLE_FAULT, "ERROR :: MALFORMED STARTUP COMMAND",
+              g_ble_status, g_ledc);
+        return;
+    }
+
+    // BLE is good to go.
+    g_ledc->solid(PIN_LED_IMU_FAULT);
+    g_ble_status = Status_t::ONLINE;
+}
+
+/**
+ * Initializes the pyros. TODO
  */
 void init_pyros()
 {
-    g_ledc->flash(PIN_LED_BLE_FAULT);
     g_ledc->flash(PIN_LED_PYRO1_FAULT);
     g_ledc->flash(PIN_LED_PYRO2_FAULT);
 }
@@ -425,9 +496,9 @@ void update_sensors()
     SV_ACCEL_X = g_imu->data().accel_x;
     SV_ACCEL_Y = g_imu->data().accel_y;
     SV_ACCEL_Z = g_imu->data().accel_z;
-    SV_GYRO_R = g_imu->data().gyro_r;
-    SV_GYRO_P = g_imu->data().gyro_p;
+    SV_GYRO_X = g_imu->data().gyro_z;
     SV_GYRO_Y = g_imu->data().gyro_y;
+    SV_GYRO_Z = g_imu->data().gyro_x;
 
     // Read IMU temperature.
     Sac2020Imu* imu_cast = (Sac2020Imu*) g_imu;
@@ -497,6 +568,7 @@ void setup()
     // In case we are debugging over serial, give operator a moment to open
     // serial monitor.
     DEBUG_SERIAL.begin(115200);
+    BLE_SERIAL.begin(115200);
     delay(3000);
 
     // Zero the state vector.
@@ -513,8 +585,12 @@ void setup()
                                 PIN_LED_BARO_FAULT});
 
     // Signal to operator that computer is in startup.
-    TELEM("Vehicle is in startup...");
     EVENT_FLASH(8);
+
+    // Begin by initializing the BLE and waiting for the startup command
+    // from the field operator via Bluefruit app.
+    init_ble();
+    TELEM("Vehicle is in startup...");
 
 #ifdef USING_FNW
     TELEM("Contacting aux node...");
@@ -567,10 +643,10 @@ void setup()
 #endif
 
     // Initialize subsystems.
+    init_pyros();
     init_imu();
     init_baro();
     init_servos();
-    init_pyros();
 
     // Set up Kalman filter.
     g_kf.set_delta_t(g_mtr_kf.period());
@@ -588,10 +664,24 @@ void setup()
         g_ledc->flash(PIN_LED_SYS_FAULT);
     }
 
-    TELEM("Setup complete. Awaiting liftoff...");
-
     // Raise all LEDs to flip internal flags in controller.
     g_ledc->raise_all();
+
+    // Wait for operator signal to proceed to liftoff detection.
+    static const char CMD_GOTIME[] = "321\n";
+    TELEM("Setup complete. Enter \"%s\" to allow liftoff detection...",
+          CMD_GOTIME);
+    while (!ble_recv(CMD_GOTIME, sizeof(CMD_GOTIME) - 1));
+    TELEM("Let's jam!");
+    delay(1000);
+
+    // End connection with BLE.
+    g_ble.end();
+
+    // Flag that we no longer want to pipe telemetry to the BLE.
+    // It was observed that continuing to write to its serial after
+    // ending the session would cause anomalous crashes.
+    g_ble_active = false;
 
 #ifdef FF
     // If using FF, open telemetry pipes.

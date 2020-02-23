@@ -71,7 +71,7 @@
 #ifdef GROUND_TEST
     #define LIFTOFF_ACCEL_TRIGGER_MPSSQ 1
 #else
-    #define LIFTOFF_ACCEL_TRIGGER_MPSSQ 3 * photic::EARTH_SLGRAV_MPSSQ
+    #define LIFTOFF_ACCEL_TRIGGER_MPSSQ 2 * photic::EARTH_SLGRAV_MPSSQ
 #endif
 
 #endif

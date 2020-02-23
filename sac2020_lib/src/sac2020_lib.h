@@ -8,7 +8,7 @@
  * @purpose   Supporting code that is common to both main and auxiliary flight
  *            computer nodes.
  * @author    Stefan deBruyn
- * @updated   2/2/2020
+ * @updated   2/22/2020
  */
 
 #ifndef SAC2020_LIB_H
