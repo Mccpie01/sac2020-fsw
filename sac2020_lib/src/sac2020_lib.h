@@ -23,7 +23,7 @@
      * Whether or not computer is being tested on the ground, inert, outside
      * of a rocket. THIS SHOULD BE COMMENTED OUT ON LAUNCH DAY.
      */
-    #define GROUND_TEST
+    // #define GROUND_TEST
 
     /**
      * Toggles debug prints to Serial.
@@ -34,6 +34,11 @@
      * Flight network communication line (serial line between main and aux FCs).
      */
     #define FNW_SERIAL Serial1
+
+    /**
+     * Serial line used to communicate with Bluetooth module.
+     */
+    #define BLE_SERIAL Serial3
 
     /**
      * Baud rate for FNW_SERIAL.

@@ -7,7 +7,7 @@
  * @file      sac2020_main_pins.h
  * @purpose   Pinouts for the main flight computer node.
  * @author    Stefan deBruyn
- * @updated   2/22/2020
+ * @updated   2/23/2020
  */
 
 #ifndef SAC2020_MAIN_PINS_H
@@ -44,7 +44,6 @@
 #define PIN_BLE_CTS 14
 #define PIN_BLE_MOD 22
 #define PIN_BLE_DFU 23
-#define BLE_SERIAL  Serial3
 
 /**
  * Continuity checking.

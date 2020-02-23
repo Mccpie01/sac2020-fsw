@@ -17,10 +17,12 @@
 #else
     #include <SPI.h>
     #include <Servo.h>
+    #include <TeensyThreads.h>
     #include <Wire.h>
 
     #include "Adafruit_BLE.h"
     #include "Adafruit_BluefruitLE_UART.h"
+    #include "sac2020_anthem.h"
     #include "sac2020_baro.h"
     #include "sac2020_imu.h"
 #endif
@@ -218,6 +220,11 @@ bool g_ble_active = false;
  * another telemetry packet.
  */
 bool g_aux_ack_pending = false;
+
+/**
+ * ID of anthem thread.
+ */
+int32_t g_anthem_thread_id = -1;
 
 /********************************* FUNCTIONS **********************************/
 
@@ -668,6 +675,11 @@ void setup()
     // Raise all LEDs to flip internal flags in controller.
     g_ledc->raise_all();
 
+#ifndef FF
+    // Let's go, comrade!
+    g_anthem_thread_id = threads.addThread(anthem, nullptr);
+#endif
+
     // Wait for operator signal to proceed to liftoff detection.
     static const char CMD_GOTIME[] = "321\n";
     TELEM("Setup complete. Enter \"%s\" to allow liftoff detection...",
@@ -678,6 +690,12 @@ void setup()
 
     // End connection with BLE.
     g_ble.end();
+
+#ifndef FF
+    // Kill the anthem thread, which doesn't place nice with the IMU.
+    threads.kill(g_anthem_thread_id);
+    delay(100); // Thread dies on the next time slice, so wait for that.
+#endif
 
     // Flag that we no longer want to pipe telemetry to the BLE.
     // It was observed that continuing to write to its serial after
@@ -858,8 +876,17 @@ void loop()
     bool do_kf = SV_STATE != VehicleState_t::PRELTOFF;
     if (do_kf && g_mtr_kf.poll(SV_TIME))
     {
+        // Huge drops in the barometer's altitude reading have been noticed in
+        // the moments following liftoff. We believe this to be caused by the
+        // mass of inert air in the avionics bay hitting the sensor as it
+        // suddenly accelerates. To combat this, we floor the altitude
+        // observation at the estimated launchpad altitude so that the filter
+        // does not think the rocket is traveling in the direction opposite of
+        // the measured acceleration.
+        float alt_obs = SV_BARO_ALT < g_x0 ? g_x0 : SV_BARO_ALT;
+
         // Run the filter and place the new estimate into the state vector.
-        photic::matrix kinst = g_kf.filter(SV_BARO_ALT, SV_ACCEL_VERT);
+        photic::matrix kinst = g_kf.filter(alt_obs, SV_ACCEL_VERT);
         SV_ALTITUDE = kinst[0][0];
         SV_VELOCITY = kinst[1][0];
         SV_ACCEL = kinst[2][0];
