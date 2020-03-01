@@ -8,7 +8,7 @@
  * @purpose   Arduino sketch for the main flight computer node, which manages
  *            the rocket's state, navigation, and recovery.
  * @author    Stefan deBruyn
- * @updated   2/23/2020
+ * @updated   3/1/2020
  */
 
 #ifdef FF
@@ -36,7 +36,8 @@
 
 /**
  * Telemetry output. This output goes to the terminal in FF (and supports FF
- * formatting) and goes to DEBUG_SERIAL in Teensyduino.
+ * formatting) and goes to DEBUG_SERIAL in Teensyduino. FF formatting
+ * metacharacters are automatically cleaned from debug strings if not in FF.
  */
 #ifdef FF
     #define TELEM(data, ...)                                                   \
@@ -102,6 +103,16 @@
  * case of a BNO055 IMU calibrated flat on a table, this is the positive z axis.
  */
 #define VERTICAL_AXIS_VECTOR_IDX 2
+
+/**
+ * Command received over BLE that prompts FC startup.
+ */
+#define CMD_STARTUP "go"
+
+/**
+ * Command received over BLE that enables liftoff detection.
+ */
+#define CMD_GOTIME "321"
 
 /********************************* STATE MACROS *******************************/
 
@@ -234,8 +245,8 @@ int32_t g_anthem_thread_id = -1;
  * Note: BLE recv buffer is flushed after receipt.
  *
  * @param   k_exp Expected string.
- * @param   k_len Method will block until this many bytes are received.
- *                Should probably be the length of k_exp.
+ * @param   k_len Size of expected string. Method blocks until this many
+                  bytes are received from the BLE.
  *
  * @ret     Whether or not the received string matched the expected.
  */
@@ -258,8 +269,10 @@ bool ble_recv(const char k_exp[], size_t k_len)
     delay(100);
     g_ble.flush();
 
-    // Return if the data matched the expected.
-    return memcmp(recv_buf, k_exp, k_len) == 0;
+    // Return if the data matched the expected. Expected string is terminated
+    // by a null sentinel, but received string is terminated by a newline, so
+    // exclude the last character from the comparison.
+    return memcmp(recv_buf, k_exp, k_len - 1) == 0;
 }
 
 /**
@@ -466,8 +479,7 @@ void init_ble()
     g_ble.setMode(BLUEFRUIT_MODE_DATA);
 
     // Wait for startup command.
-    static const char CMD_STARTUP[] = "go\n";
-    if (!ble_recv(CMD_STARTUP, sizeof(CMD_STARTUP) - 1))
+    if (!ble_recv(CMD_STARTUP, sizeof(CMD_STARTUP)))
     {
         fault(PIN_LED_BLE_FAULT, "ERROR :: MALFORMED STARTUP COMMAND",
               g_ble_status, g_ledc);
@@ -475,7 +487,7 @@ void init_ble()
     }
 
     // BLE is good to go.
-    g_ledc->solid(PIN_LED_IMU_FAULT);
+    g_ledc->solid(PIN_LED_BLE_FAULT);
     g_ble_status = Status_t::ONLINE;
 }
 
@@ -676,15 +688,14 @@ void setup()
     g_ledc->raise_all();
 
 #ifndef FF
-    // Let's go, comrade!
+    // ввысь, товарищ.
     g_anthem_thread_id = threads.addThread(anthem, nullptr);
 #endif
 
     // Wait for operator signal to proceed to liftoff detection.
-    static const char CMD_GOTIME[] = "321\n";
     TELEM("Setup complete. Enter \"%s\" to allow liftoff detection...",
           CMD_GOTIME);
-    while (!ble_recv(CMD_GOTIME, sizeof(CMD_GOTIME) - 1));
+    while (!ble_recv(CMD_GOTIME, sizeof(CMD_GOTIME)));
     TELEM("Let's jam!");
     delay(1000);
 
@@ -694,7 +705,7 @@ void setup()
 #ifndef FF
     // Kill the anthem thread, which doesn't place nice with the IMU.
     threads.kill(g_anthem_thread_id);
-    delay(100); // Thread dies on the next time slice, so wait for that.
+    delay(100); // Thread dies on the next time slice, so wait a bit for that.
 #endif
 
     // Flag that we no longer want to pipe telemetry to the BLE.
