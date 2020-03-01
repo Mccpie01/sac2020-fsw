@@ -5,3 +5,6 @@
 !/sac2020_aux/
 !/sac2020_main/
 !/sac2020_lib/
+sac2020_lib/decode
+sac2020_lib/TELEM.DAT
+sac2020_lib/TELEM.DAT.csv
