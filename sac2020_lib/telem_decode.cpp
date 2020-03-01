@@ -34,9 +34,10 @@ int main(int ac, char** av)
     FILE* p_fout = NULL;
     std::string fout_name = std::string(av[1]) + ".csv";
     p_fout = fopen(fout_name.c_str(), "w");
-    fputs("Time,State,Filtered Altitude,Filtered Velocity,FilteredAcceleration,"
+    fputs("Time,State,Filtered Altitude,Filtered Velocity,Filtered Acceleration,"
           "Pressure,Temperature,Barometer Altitude,IMU Temperature,"
-          "Accel X,Accel Y,Accel Z,Accel Vertical,Gyro X,Gyro Y,Gyro Z\n",
+          "Accel X,Accel Y,Accel Z,Accel Vertical,Gyro X,Gyro Y,Gyro Z,"
+          "Quat W,Quat X,Quat Y,Quat Z,LP Altitude\n",
           p_fout);
 
     MainStateVector_t vec;
@@ -45,32 +46,17 @@ int main(int ac, char** av)
     {
         packet_count++;
 
-        // Timestamp and state.
-        printf("[%06.2f//%s] ", vec.time, state_name(vec.state));
-
-        // Kalman filter state estimate.
-        printf("kfalt=%09.2f kfvel=%09.2f kfacc=%09.2f   ",
-               vec.altitude, vec.velocity, vec.acceleration);
-
-        // Sensor readings.
-        printf("q=%09.2f c=%09.2f balt=%09.2f cimu=%09.2f   ",
-               vec.pressure, vec.temperature, vec.baro_altitude, vec.imu_temp);
-        printf("accx=%09.2f accy=%09.2f accz=%09.2f accv=%09.2f   ",
-               vec.accel_x, vec.accel_y, vec.accel_z, vec.accel_vertical);
-        printf("r=%09.2f p=%09.2f y=%09.2f",
-               vec.gyro_r, vec.gyro_p, vec.gyro_y);
-
         // Write to CSV.
         sprintf(record, "%.4f,%s,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%.4f,%.4f,"
-                        "%.4f,%.4f,%.4f,%.4f,%.4f\n",
+                        "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
                         vec.time, state_name(vec.state), vec.altitude,
                         vec.velocity, vec.acceleration, vec.pressure,
                         vec.temperature, vec.baro_altitude, vec.imu_temp,
                         vec.accel_x, vec.accel_y, vec.accel_z,
-                        vec.accel_vertical, vec.gyro_r, vec.gyro_p, vec.gyro_y);
+                        vec.accel_vertical, vec.gyro_x, vec.gyro_y, vec.gyro_z,
+                        vec.quat_w, vec.quat_x, vec.quat_y, vec.quat_z,
+                        vec.launchpad_altitude);
         fputs(record, p_fout);
-
-        printf("\n");
     }
 
     fclose(p_fin);

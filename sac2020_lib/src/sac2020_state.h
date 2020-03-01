@@ -7,7 +7,7 @@
  * @file      sac2020_state.h
  * @purpose   Flight computer state representation objects.
  * @author    Stefan deBruyn
- * @updated   2/3/2020
+ * @updated   3/1/2020
  */
 
 #ifndef SAC2020_STATE_H
@@ -40,13 +40,6 @@ typedef struct MainStateVector
     // Timestamp.
     float time;
 
-    // Timestamps for flight events.
-    float t_liftoff;
-    float t_burnout;
-    float t_canards;
-    float t_drogue;
-    float t_main;
-
     // Rocket state as estimated by nav filter.
     float altitude;
     float velocity;
@@ -63,6 +56,13 @@ typedef struct MainStateVector
     float gyro_x;
     float gyro_y;
     float gyro_z;
+    float quat_w;
+    float quat_x;
+    float quat_y;
+    float quat_z;
+
+    // Estimated launchpad altitude.
+    float launchpad_altitude;
 
     // Current state of the flight computer.
     VehicleState_t state;

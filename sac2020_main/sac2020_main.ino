@@ -120,11 +120,6 @@
  * Shortcuts to members of the state vector.
  */
 #define SV_TIME        g_statevec.time
-#define SV_T_LIFTOFF   g_statevec.t_liftoff
-#define SV_T_BURNOUT   g_statevec.t_burnout
-#define SV_T_CANARDS   g_statevec.t_canards
-#define SV_T_DROGUE    g_statevec.t_drogue
-#define SV_T_MAIN      g_statevec.t_main
 #define SV_ALTITUDE    g_statevec.altitude
 #define SV_VELOCITY    g_statevec.velocity
 #define SV_ACCEL       g_statevec.acceleration
@@ -138,6 +133,11 @@
 #define SV_GYRO_X      g_statevec.gyro_x
 #define SV_GYRO_Y      g_statevec.gyro_y
 #define SV_GYRO_Z      g_statevec.gyro_z
+#define SV_QUAT_W      g_statevec.quat_w
+#define SV_QUAT_X      g_statevec.quat_x
+#define SV_QUAT_Y      g_statevec.quat_y
+#define SV_QUAT_Z      g_statevec.quat_z
+#define SV_LP_ALT      g_statevec.launchpad_altitude
 #define SV_IMU_TEMP    g_statevec.imu_temp
 #define SV_STATE       g_statevec.state
 
@@ -171,10 +171,6 @@ Status_t g_fnw_status   = Status_t::OFFLINE; // Flight computer network.
 photic::KalmanFilter g_kf;
 photic::Metronome g_mtr_kf(10);
 
-/**
- * Launchpad altitude, estimated during startup.
- */
-double g_x0;
 /**
  * Whether or not the final state vector indicating the vehicle is in
  * VehicleState_t::CONCLUDE has been sent to the aux computer.
@@ -236,6 +232,11 @@ bool g_aux_ack_pending = false;
  * ID of anthem thread.
  */
 int32_t g_anthem_thread_id = -1;
+
+/**
+ * Time of liftoff detection.
+ */
+float g_t_liftoff = -1;
 
 /********************************* FUNCTIONS **********************************/
 
@@ -317,7 +318,7 @@ void init_baro()
     // Compute variance and set launchpad altitude.
     g_pos_variance = alts.stdev() * alts.stdev();
     SV_ALTITUDE = alts.mean();
-    g_x0 = SV_ALTITUDE;
+    SV_LP_ALT = SV_ALTITUDE;
 
     // Bring up barometer LED again and reset all LEDs.
     g_ledc->solid(PIN_LED_BARO_FAULT);
@@ -520,17 +521,23 @@ void update_sensors()
     SV_GYRO_Y = g_imu->data().gyro_y;
     SV_GYRO_Z = g_imu->data().gyro_x;
 
+#ifndef FF
     // Read IMU temperature.
     Sac2020Imu* imu_cast = (Sac2020Imu*) g_imu;
     SV_IMU_TEMP = imu_cast->get_temp();
 
-#ifndef FF
     // Determine vertical component of acceleration relative to launchpad
     // using sensed orientation.
-    imu::Quaternion orientation = ((Sac2020Imu*) g_imu)->quat();
+    imu::Quaternion orientation = imu_cast->quat();
     imu::Vector<3> accel_rocket(SV_ACCEL_X, SV_ACCEL_Y, SV_ACCEL_Z);
     imu::Vector<3> accel_world = orientation.rotateVector(accel_rocket);
     SV_ACCEL_VERT = accel_world[VERTICAL_AXIS_VECTOR_IDX];
+
+    // Put quaternion orientation into state vector.
+    SV_QUAT_W = orientation.w();
+    SV_QUAT_X = orientation.x();
+    SV_QUAT_Y = orientation.y();
+    SV_QUAT_Z = orientation.z();
 #else
     // In Flight Factory, just use the vertical reading, since the flight model
     // is only 1 DoF.
@@ -568,7 +575,7 @@ void deploy_main()
  */
 inline double time_liftoff_s()
 {
-    return time_s() - SV_T_LIFTOFF;
+    return time_s() - g_t_liftoff;
 }
 
 /**
@@ -671,7 +678,7 @@ void setup()
     // Set up Kalman filter.
     g_kf.set_delta_t(g_mtr_kf.period());
     g_kf.set_sensor_variance(g_pos_variance, g_acc_variance);
-    g_kf.set_initial_estimate(g_x0, 0, 0);
+    g_kf.set_initial_estimate(SV_LP_ALT, 0, 0);
     g_kf.compute_kg(KGAIN_CALC_DEPTH);
 
     // Determine if everything initialized correctly.
@@ -754,7 +761,7 @@ void run_state_machine()
         {
             TELEM("Event $b%-7s#r at t+$y%06.2f#r by $r%-9s#r; acc=$y%.2f#r",
                   "LIFTOFF", SV_TIME, EVENT_WINDOW_REASON, g_hist_lodet.mean());
-            SV_T_LIFTOFF = SV_TIME;
+            g_t_liftoff = SV_TIME;
             SV_STATE = VehicleState_t::PWFLIGHT;
 
             // Lower all LEDs to conserve power.
@@ -781,7 +788,6 @@ void run_state_machine()
             TELEM("Event $b%-7s#r at t+$y%06.2f#r by $r%-9s#r; acc=$y%.2f#r",
                   "BURNOUT", SV_TIME, EVENT_WINDOW_REASON, g_hist_bodet.mean());
             SV_STATE = VehicleState_t::CRUISING;
-            SV_T_BURNOUT = SV_TIME;
         }
     }
     // If cruising without canards deployed, we're waiting for a timeout or
@@ -792,13 +798,13 @@ void run_state_machine()
         EVENT_WINDOW_INIT(time_liftoff_s(), EVENT_CANARDS_T_LOW_S,
                           EVENT_CANARDS_T_HIGH_S);
         bool canard_conds_met =
-                (SV_ALTITUDE - g_x0) >= CANARD_DEPLOYMENT_ALTITUDE_M;
+                (SV_ALTITUDE - SV_LP_ALT) >= CANARD_DEPLOYMENT_ALTITUDE_M;
         if (EVENT_WINDOW_EVAL(canard_conds_met))
         {
             TELEM("Event $b%-7s#r at t+$y%06.2f#r by $r%-9s#r; hgt=$y%.2f#r",
-                  "CANARDS", SV_TIME, EVENT_WINDOW_REASON, SV_ALTITUDE - g_x0);
+                  "CANARDS", SV_TIME, EVENT_WINDOW_REASON,
+                  SV_ALTITUDE - SV_LP_ALT);
             SV_STATE = VehicleState_t::CRSCANRD;
-            SV_T_CANARDS = SV_TIME;
             deploy_canards();
         }
     }
@@ -822,7 +828,6 @@ void run_state_machine()
             TELEM("Event $b%-7s#r at t+$y%06.2f#r by $r%-9s#r; vel=$y%.2f#r",
                   "DROGUE", SV_TIME, EVENT_WINDOW_REASON, g_hist_apdet.mean());
             SV_STATE = VehicleState_t::FALLDROG;
-            SV_T_DROGUE = SV_TIME;
             deploy_drogue();
         }
     }
@@ -834,13 +839,13 @@ void run_state_machine()
         EVENT_WINDOW_INIT(time_liftoff_s(), EVENT_MAIN_T_LOW_S,
                           EVENT_MAIN_T_HIGH_S);
         bool main_conds_met =
-                (SV_ALTITUDE - g_x0) <= MAIN_DEPLOYMENT_ALTITUDE_M;
+                (SV_ALTITUDE - SV_LP_ALT) <= MAIN_DEPLOYMENT_ALTITUDE_M;
         if (EVENT_WINDOW_EVAL(main_conds_met))
         {
             TELEM("Event $b%-7s#r at t+$y%06.2f#r by $r%-9s#r; hgt=$y%.2f#r",
-                  "MAIN", SV_TIME, EVENT_WINDOW_REASON, SV_ALTITUDE - g_x0);
+                  "MAIN", SV_TIME, EVENT_WINDOW_REASON,
+                  SV_ALTITUDE - SV_LP_ALT);
             SV_STATE = VehicleState_t::FALLMAIN;
-            SV_T_MAIN = SV_TIME;
             deploy_main();
         }
     }
@@ -894,7 +899,7 @@ void loop()
         // observation at the estimated launchpad altitude so that the filter
         // does not think the rocket is traveling in the direction opposite of
         // the measured acceleration.
-        float alt_obs = SV_BARO_ALT < g_x0 ? g_x0 : SV_BARO_ALT;
+        float alt_obs = SV_BARO_ALT < SV_LP_ALT ? SV_LP_ALT : SV_BARO_ALT;
 
         // Run the filter and place the new estimate into the state vector.
         photic::matrix kinst = g_kf.filter(alt_obs, SV_ACCEL_VERT);
