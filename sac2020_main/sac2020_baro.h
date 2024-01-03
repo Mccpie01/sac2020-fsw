@@ -17,10 +17,11 @@
 #ifndef SAC2020_BARO_H
 #define SAC2020_BARO_H
 
-#include <Adafruit_BMP085.h>
-#include <photic.h>
+#include <Adafruit_BMP085_U.h>
 
-class Sac2020Barometer final : public photic::Barometer
+#include <Photic.hpp>
+
+class Sac2020Barometer final : public Photic::BarometerInterface
 {
 public:
     /**
@@ -40,9 +41,9 @@ public:
      */
     bool update()
     {
-        m_data.pressure = m_bmp085.readPressure();
-        m_data.temperature = m_bmp085.readTemperature();
-        m_data.altitude = m_bmp085.readAltitude();
+        mData.pressure = m_bmp085.getPressure();
+        mData.temperature = m_bmp085.getTemperature();
+        mData.altitude = m_bmp085.getAltitude();
 
         return true;
     }
@@ -51,7 +52,7 @@ private:
     /**
      * BMP085 driver.
      */
-    Adafruit_BMP085 m_bmp085;
+    Adafruit_BMP085_Unified m_bmp085;
 };
 
 #endif

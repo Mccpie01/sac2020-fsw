@@ -18,6 +18,14 @@
 #define SAC2020_MAIN_PINS_H
 
 /**
+ * RF module.
+ */
+#define PIN_RFM_ENABLE  4
+#define PIN_RFM_RESET   5
+#define PIN_RFM_INTR    16
+#define PIN_RFM_CHIPSEL 20
+
+/**
  * BNO055 IMU.
  */
 #define PIN_BNO055_RESET 2
@@ -40,7 +48,9 @@
 #define PIN_LED_PYRO1_FAULT 17
 #define PIN_LED_FNW_FAULT   20
 #define PIN_LED_BARO_FAULT  21
-
+#define PIN_LED_SD_FAULT  21 // SD card.
+#define PIN_LED_RFM_FAULT 22 // RF module.
+#define PIN_LED_GPS_FAULT 23 // GPS.
 /**
  * Bluetooth module.
  */

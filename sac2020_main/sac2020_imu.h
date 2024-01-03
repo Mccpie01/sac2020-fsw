@@ -20,11 +20,11 @@
 
 #include <Adafruit_BNO055.h>
 #include <Adafruit_Sensor.h>
-#include <photic.h>
+#include <Photic.hpp>
 
 #include "utility/imumaths.h"
 
-class Sac2020Imu final : public photic::Imu
+class Sac2020Imu final : public Photic::IMUInterface
 {
 public:
     /**
@@ -59,14 +59,14 @@ public:
 
         // Populate orientation data. Currently this maps x, y, z to roll,
         // pitch, yaw, but I have no idea if this is correct.
-        m_data.gyro_x = orient.orientation.x;
-        m_data.gyro_y = orient.orientation.y;
-        m_data.gyro_z = orient.orientation.z;
+        mData.gyro_x = orient.orientation.x;
+        mData.gyro_y = orient.orientation.y;
+        mData.gyro_z = orient.orientation.z;
 
         // Populate acceleration data.
-        m_data.accel_x = accel.acceleration.x;
-        m_data.accel_y = accel.acceleration.y;
-        m_data.accel_z = accel.acceleration.z;
+        mData.accel_x = accel.acceleration.x;
+        mData.accel_y = accel.acceleration.y;
+        mData.accel_z = accel.acceleration.z;
 
         // Populate quaternion orientation. This does not go into the data
         // struct because it uses a proprietary class. Access with

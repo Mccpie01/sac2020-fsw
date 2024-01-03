@@ -1,3 +1,5 @@
+
+
 /**
  *             [ANOTHER FINE PRODUCT FROM THE NONSENSE FACTORY]
  *
@@ -19,8 +21,8 @@
 #ifndef SAC2020_PROFILE_H
 #define SAC2020_PROFILE_H
 
-#include <photic.h>
-#include <sac2020_lib.h>
+#include <Photic.hpp>
+#include "sac2020_lib.h"
 
 /**
  * The following values define the time windows around detection of each flight
@@ -75,7 +77,7 @@
 #ifdef GROUND_TEST
     #define LIFTOFF_ACCEL_TRIGGER_MPSSQ 1
 #else
-    #define LIFTOFF_ACCEL_TRIGGER_MPSSQ 2 * photic::EARTH_SLGRAV_MPSSQ
+    #define LIFTOFF_ACCEL_TRIGGER_MPSSQ 2 * Photic::EARTH_SLGRAV_MPSSQ
 #endif
 
 #endif
