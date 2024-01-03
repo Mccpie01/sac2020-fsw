@@ -1,6 +1,9 @@
 # sac2020-computer
 
 2024-01-03 Fork Created and looking to Fix compile error and Move the code to a Teensy 4.1
+- Todo Add support for AltIMU-10 v6 Gyro, Accelerometer, Compass, and Altimeter (LSM6DSO, LIS3MDL, and LPS22DF Carrier)
+- Add support for more GPS
+- Add config file for Hardware available(select hardware to used)
 
 > Which socioeconomic ideology got a man into orbit first?
 
