@@ -7,10 +7,11 @@
   - Add config file for Hardware available (select hardware to use)
   - Maybe add a Web page to see the rocket status
   - Add support to display rocket status on an Oled or ePaper ( When running Bench test )
-  - Add support for 6 pyros
-  - Add support for 10 Servos
+  - Add support for 6 pyros (Primer and backup)
+  - Add support for 10 Servos (For Canard fins, Moterize Parashut deployment, Air break Deployment, and more.)
   - Add More Documentation
   - Add support for the UNC RC 1.1 Flight computer (or Newer)
+  - Add a Deploy Package ( Future Project to deploy an edf rocket in the form of a MARS or MOON Lander)
 
 > Which socioeconomic ideology got a man into orbit first?
 
@@ -24,7 +25,7 @@
 * Tracks vehicle state with BNO055 IMU and BMP085 barometer
 * Deploys forward canards
 * Fires recovery pyros
-* Sends periodic telemetry packets to auxiliary computer
+* Sends periodic telemetry packets to an auxiliary computer
 
 
 **Auxiliary Computer**
