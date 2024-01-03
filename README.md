@@ -1,9 +1,16 @@
 # sac2020-computer
 
-2024-01-03 Fork Created and looking to Fix compile error and Move the code to a Teensy 4.1
-- Todo Add support for AltIMU-10 v6 Gyro, Accelerometer, Compass, and Altimeter (LSM6DSO, LIS3MDL, and LPS22DF Carrier)
-- Add support for more GPS
-- Add config file for Hardware available(select hardware to used)
+2024-01-03 Fork Created and looking to Fix compile error and Move the code to a Teensy 4.1 (Unified into 1 Teensy 4.1)
+- Todo
+  - Add support for AltIMU-10 v6 Gyro, Accelerometer, Compass, and Altimeter (LSM6DSO, LIS3MDL, and LPS22DF Carrier)
+  - Add support for more GPS
+  - Add config file for Hardware available (select hardware to use)
+  - Maybe add a Web page to see the rocket status
+  - Add support to display rocket status on an Oled or ePaper ( When running Bench test )
+  - Add support for 6 pyros
+  - Add support for 10 Servos
+  - Add More Documentation
+  - Add support for the UNC RC 1.1 Flight computer (or Newer)
 
 > Which socioeconomic ideology got a man into orbit first?
 
