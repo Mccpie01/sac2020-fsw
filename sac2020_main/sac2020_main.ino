@@ -23,9 +23,7 @@
     #include <Servo.h>
     #include <TeensyThreads.h>
     #include <Wire.h>
-    #include <Adafruit_GPS.h>
-    #include <RH_RF95.h>
-    #include <SD.h>
+
     #include "Adafruit_BLE.h"
     #include "Adafruit_BluefruitLE_UART.h"
     #include "sac2020_anthem.h"
@@ -34,7 +32,7 @@
 #endif
 
 #include <math.h>
-#include <Photic.hpp>
+#include "photic.h"
 #include "sac2020_lib.h"
 
 #include "sac2020_main_pins.h"
@@ -87,19 +85,6 @@
 /******************************** CONFIGURATION ********************************/
 
 /**
- * RF module frequency.
- */
-#define RFM_FREQ 915
-/**
- * Name of telemetry heap file on SD card.
- */
-#define TELEM_FNAME "TELEM.DAT"
-/**
- * Name of GPS data file on SD card.
- */
-#define NMEA_FNAME "NMEA.DAT"
-
-/**
  * Depth of Kalman gain calculation.
  */
 #define KGAIN_CALC_DEPTH 50
@@ -133,8 +118,6 @@
  */
 #define CMD_GOTIME "321"
 
-
-
 /********************************* STATE MACROS *******************************/
 
 /**
@@ -167,43 +150,8 @@
 /**
  * Hardware wrappers, configured during startup.
  */
-Adafruit_GPS g_gps(&Serial3);
-RH_RF95      g_rfm(PIN_RFM_CHIPSEL, PIN_RFM_INTR);
-
-/**
- * Component statuses, set during startup.
- */
-Status_t g_sd_status  = Status_t::OFFLINE; // SD card.
-Status_t g_gps_status = Status_t::OFFLINE; // GPS.
-Status_t g_rfm_status = Status_t::OFFLINE; // RF module.
-Status_t g_fnw_status = Status_t::OFFLINE; // Flight computer network.
-
-/**
- * Whether or not rocket has entered flight. This is flipped on the first
- * receipt of a telemetry packet from main.
- */
-bool g_liftoff = false;
-
-/**
- * Whether or not FNW indicator LED is lit.
- */
-bool g_telemtx_led = false;
-
-/**
- * Whether or not I have handshook with main.
- */
-bool g_handshake = false;
-
-/**
- * Controller for status LEDs.
- */
-LEDController* g_ledc = nullptr;
-
-/**
- * Hardware wrappers, configured during startup.
- */
-Photic::IMUInterface* g_imu;
-Photic::BarometerInterface* g_baro;
+photic::Imu* g_imu;
+photic::Barometer* g_baro;
 #ifndef FF
     Servo g_servo1;
     Servo g_servo2;
@@ -224,8 +172,8 @@ Status_t g_fnw_status   = Status_t::OFFLINE; // Flight computer network.
 /**
  * Kalman filter for state estimation and metronome controlling its frequency.
  */
-Photic::KalmanFilter g_kf;
-Photic::Metronome g_mtr_kf(10);
+photic::KalmanFilter g_kf;
+photic::Metronome g_mtr_kf(10);
 
 /**
  * Whether or not the final state vector indicating the vehicle is in
@@ -243,24 +191,24 @@ float g_acc_variance;
  * Liftoff is defined as a 1-second rolling average of vertical acceleration
  * readings meeting or exceeding LIFTOFF_ACCEL_TRIGGER_MPSSQ.
  */
-Photic::History<float> g_hist_lodet(10);
-Photic::Metronome g_mtr_lodet(10);
+photic::history<float> g_hist_lodet(10);
+photic::Metronome g_mtr_lodet(10);
 
 /**
  * History for burnout detection and metronome controlling its frequency.
  * Burnout is defined as a 1-second rolling average of vertical acceleration
  * readings within BURNOUT_ACCEL_TRIGGER_NEGL_MPSSQ of 1 G.
  */
-Photic::History<float> g_hist_bodet(10);
-Photic::Metronome g_mtr_bodet(10);
+photic::history<float> g_hist_bodet(10);
+photic::Metronome g_mtr_bodet(10);
 
 /**
  * History for apogee detection and metronome controlling its frequency. Apogee
  * is defined as a 1-second rolling average of vertical velocity estimates that
  * are negative.
  */
-Photic::History<float> g_hist_apdet(10);
-Photic::Metronome g_mtr_apdet(10);
+photic::history<float> g_hist_apdet(10);
+photic::Metronome g_mtr_apdet(10);
 
 /**
  * Vehicle state vector. Zeroed on startup. Contains the symbolic state of the
@@ -295,107 +243,6 @@ int32_t g_anthem_thread_id = -1;
 float g_t_liftoff = -1;
 
 /********************************* FUNCTIONS **********************************/
-
-/**
- * Initializes the SD card library and validates file operations. Updates the
- * global status appropriately.
- */
-void init_sd()
-{
-    static const char TEST_FNAME[] = "SDVAL";
-    static const char TEST_BUF[]   = "Rage against the dying of the light.";
-
-    // Attempt to initialize library.
-    if (!SD.begin(PIN_SDCARD_CHIPSEL))
-    {
-        fault(PIN_LED_SD_FAULT, "ERROR :: SD INIT FAILED", g_sd_status, g_ledc);
-        return;
-    }
-
-    // Validate write operation.
-    File out = SD.open(TEST_FNAME, FILE_WRITE);
-    size_t bytes_written = out.write(TEST_BUF, sizeof TEST_BUF);
-    out.close();
-    if (bytes_written != sizeof TEST_BUF)
-    {
-        fault(PIN_LED_SD_FAULT, "ERROR :: SD TEST WRITE FAILED", g_sd_status,
-              g_ledc);
-        return;
-    }
-
-    // Validate read operation.
-    File in = SD.open(TEST_FNAME, FILE_READ);
-    char buf[sizeof TEST_BUF];
-    in.read(buf, sizeof TEST_BUF);
-    in.close();
-    if (strcmp(buf, TEST_BUF))
-    {
-        fault(PIN_LED_SD_FAULT, "ERROR :: SD TEST READ FAILED", g_sd_status,
-              g_ledc);
-        return;
-    }
-
-    // Validate remove operation.
-    SD.remove(TEST_FNAME);
-    if (SD.exists(TEST_FNAME))
-    {
-        fault(PIN_LED_SD_FAULT, "ERROR :: SD TEST REMOVE FAILED", g_sd_status,
-              g_ledc);
-        return;
-    }
-
-    g_sd_status = Status_t::ONLINE;
-}
-
-/**
- * Initializes the GPS and updates the global status accordingly.
- */
-void init_gps()
-{
-    if (!g_gps.begin(9600))
-    {
-        fault(PIN_LED_GPS_FAULT, "ERROR :: GPS INIT FAILED", g_gps_status,
-              g_ledc);
-        return;
-    }
-
-    g_gps.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCGGA);
-    g_gps.sendCommand(PMTK_SET_NMEA_UPDATE_1HZ);
-
-    g_gps_status = Status_t::ONLINE;
-}
-
-/**
- * Initializes the RF module and updates the global status accordingly.
- */
-void init_rfm()
-{
-    pinMode(PIN_RFM_RESET, OUTPUT);
-    digitalWrite(PIN_RFM_RESET, HIGH);
-
-    digitalWrite(PIN_RFM_RESET, LOW);
-    delay(10);
-    digitalWrite(PIN_RFM_RESET, HIGH);
-    delay(10);
-
-    if (!g_rfm.init())
-    {
-        fault(PIN_LED_RFM_FAULT, "ERROR :: RFM INIT FAILED", g_rfm_status,
-              g_ledc);
-        return;
-    }
-
-    if (!g_rfm.setFrequency(RFM_FREQ))
-    {
-        fault(PIN_LED_RFM_FAULT, "ERROR :: FAILED TO SET RFM FREQ",
-              g_rfm_status, g_ledc);
-        return;
-    }
-
-    g_rfm.setTxPower(23, true);
-
-    g_rfm_status = Status_t::ONLINE;
-}
 
 /**
  * Receives a string of some expected size from the BLE.
@@ -464,7 +311,7 @@ void init_baro()
 
     // Estimate initial altitude via barometer. Measure variance in altitude
     // readings for computing a Kalman gain.
-    Photic::History<float> alts(LAUNCHPAD_ALTITUDE_EST_READINGS);
+    photic::history<float> alts(LAUNCHPAD_ALTITUDE_EST_READINGS);
     for (std::size_t i = 0; i < LAUNCHPAD_ALTITUDE_EST_READINGS; i++)
     {
         g_baro->update();
@@ -588,7 +435,7 @@ void init_imu()
     // Measure variance in acceleration readings for later computing a Kalman
     // gain. This is the variance in a single axis, as only a (scalar) component
     // of the measured acceleration vector enters the filter.
-    Photic::History<float> accs(LAUNCHPAD_ALTITUDE_EST_READINGS);
+    photic::history<float> accs(LAUNCHPAD_ALTITUDE_EST_READINGS);
     for (std::size_t i = 0; i < LAUNCHPAD_ALTITUDE_EST_READINGS; i++)
     {
         g_imu->update();
@@ -755,8 +602,6 @@ void setup()
     BLE_SERIAL.begin(115200);
     delay(3000);
 
-    FNW_SERIAL.begin(FNW_BAUD);
-
     // Zero the state vector.
     memset(&g_statevec, 0, sizeof(MainStateVector_t));
     SV_STATE = VehicleState_t::PRELTOFF;
@@ -768,15 +613,10 @@ void setup()
                                 PIN_LED_PYRO1_FAULT,
                                 PIN_LED_PYRO2_FAULT,
                                 PIN_LED_FNW_FAULT,
-                                PIN_LED_BARO_FAULT,
-                                PIN_LED_SD_FAULT,
-                                PIN_LED_RFM_FAULT,
-                                PIN_LED_GPS_FAULT,
-                                PIN_LED_FNW_FAULT});
+                                PIN_LED_BARO_FAULT});
 
     // Signal to operator that computer is in startup.
     EVENT_FLASH(8);
-     g_ledc->flash(PIN_LED_FNW_FAULT);
 
     // Begin by initializing the BLE and waiting for the startup command
     // from the field operator via Bluefruit app.
@@ -838,28 +678,18 @@ void setup()
     init_imu();
     init_baro();
     init_servos();
-    init_sd();
-    init_gps();
-    init_rfm();
 
     // Set up Kalman filter.
-    g_kf.setDeltaT(g_mtr_kf.period());
-    g_kf.setSensorVariance(g_pos_variance, g_acc_variance);
-    g_kf.setInitialState(SV_LP_ALT, 0, 0);
-    g_kf.computeKg(KGAIN_CALC_DEPTH);
+    g_kf.set_delta_t(g_mtr_kf.period());
+    g_kf.set_sensor_variance(g_pos_variance, g_acc_variance);
+    g_kf.set_initial_estimate(SV_LP_ALT, 0, 0);
+    g_kf.compute_kg(KGAIN_CALC_DEPTH);
 
     // Determine if everything initialized correctly.
     bool ok = g_baro_status  == Status_t::ONLINE &&
               g_imu_status   == Status_t::ONLINE &&
               g_pyro1_status == Status_t::ONLINE &&
-              g_pyro2_status == Status_t::ONLINE &&
-              g_sd_status  == Status_t::ONLINE &&
-              g_gps_status == Status_t::ONLINE &&
-              g_rfm_status == Status_t::ONLINE
-           #ifdef USING_FNW
-           && g_fnw_status == Status_t::ONLINE
-        #endif
-        ;
+              g_pyro2_status == Status_t::ONLINE;
     if (!ok)
     {
         g_ledc->flash(PIN_LED_SYS_FAULT);
@@ -1051,11 +881,7 @@ void loop()
     {
         return;
     }
-    // Flash LEDs while on pad.
-    if (!g_liftoff)
-    {
-        g_ledc->run(time_s());
-    }
+
     // Timestamp this system iteration.
     SV_TIME = time_s();
 
@@ -1080,7 +906,7 @@ void loop()
         float alt_obs = SV_BARO_ALT < SV_LP_ALT ? SV_LP_ALT : SV_BARO_ALT;
 
         // Run the filter and place the new estimate into the state vector.
-        Photic::Matrix kinst = g_kf.filter(alt_obs, SV_ACCEL_VERT);
+        photic::matrix kinst = g_kf.filter(alt_obs, SV_ACCEL_VERT);
         SV_ALTITUDE = kinst[0][0];
         SV_VELOCITY = kinst[1][0];
         SV_ACCEL = kinst[2][0];
@@ -1101,7 +927,6 @@ void loop()
     bool do_telemtx = SV_STATE != VehicleState_t::PRELTOFF;
     if (do_telemtx)
     {
-      //Need to Integrate the 2 USING_FNW function
     #ifdef USING_FNW
         // OK to send another packet.
         if (!g_aux_ack_pending)
@@ -1141,78 +966,4 @@ void loop()
         }
     #endif
     }
-    #ifdef USING_FNW
-    // Check for state vector receipt from main. Main should only start sending
-    // these after liftoff.
-    if (FNW_PACKET_AVAILABLE)
-    {
-        uint8_t packet[FNW_PACKET_SIZE];
-        FNW_SERIAL.readBytes(packet, FNW_PACKET_SIZE);
-
-        // If leading token indicates handshake, echo the packet back without
-        // saving.
-        if (packet[0] == FNW_TOKEN_HSH)
-        {
-            FNW_SERIAL.write(packet, FNW_PACKET_SIZE);
-            if (!g_handshake)
-            {
-                g_handshake = true;
-                g_ledc->solid(PIN_LED_FNW_FAULT);
-            }
-            return;
-        }
-
-        // Otherwise, it's a state vector, so we have entered flight.
-        if (!g_liftoff)
-        {
-            g_liftoff = true;
-            g_ledc->lower_all();
-        }
-
-        // Copy into struct and write to SD.
-        MainStateVector_t vec;
-        memcpy(&vec, packet + 1, sizeof(vec));
-        File out = SD.open(TELEM_FNAME, FILE_WRITE);
-        out.write((uint8_t*) (&vec), sizeof(vec));
-        out.close();
-
-        // If the state was VehicleState_t::CONCLUDE, the flight is over--raise
-        // all LEDs as indication to recovery team.
-        if (vec.state == VehicleState_t::CONCLUDE)
-        {
-            g_ledc->raise_all();
-        }
-        // Otherwise, flash LED to indicate telemetry activity.
-        else
-        {
-            g_telemtx_led = !g_telemtx_led;
-            digitalWrite(PIN_LED_FNW_FAULT, g_telemtx_led ? HIGH : LOW);
-        }
-
-        // Echo packet back to tell main we have removed it from our RX buffer.
-        FNW_SERIAL.write(packet, FNW_PACKET_SIZE);
-
-        // Transmit to ground station via RF module.
-        // g_rfm.send((uint8_t) (&vec), sizeof(vec));
-        // g_rfm.waitPacketSent();
-    }
-
-    // Check for new NMEA sentence from GPS.
-    if (g_gps.newNMEAreceived())
-    {
-        // Read new sentence.
-        char* nmea = g_gps.lastNMEA();
-
-        // Compute sentence length in a memory-safe way.
-        // Note: 120 is max sentence length according to GPS library.
-        uint32_t len = 0;
-        for (; len < 120 && nmea[len] != 0; len++);
-
-        // Write to SD card.
-        File out = SD.open(NMEA_FNAME, FILE_WRITE);
-        out.write(nmea, len);
-        out.write("\n", 1);
-        out.close();
-    }
-#endif
 }
